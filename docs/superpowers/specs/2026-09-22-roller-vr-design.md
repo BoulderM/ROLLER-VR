@@ -121,7 +121,7 @@ camera/projection substitution point (→ `build_mvp_vr_eye()`), resolution
 assumptions (→ no blocker), scenery streaming (→ low risk). No code was kept
 from this phase; findings are recorded here.
 
-### Phase 1 — Walking skeleton
+### Phase 1 — Walking skeleton (Linux/Monado leg run 2026-09-22 — partial pass, one concrete bug found)
 
 1. Patch `Zizin13/SDL`'s Vulkan and D3D12 `SDL_GPU` backends to expose
    `SDL_PROP_GPU_DEVICE_VULKAN_{INSTANCE,PHYSICAL_DEVICE,DEVICE}_POINTER` /
@@ -131,10 +131,52 @@ from this phase; findings are recorded here.
 2. Use those handles to satisfy `XR_KHR_vulkan_enable2` /
    `XR_KHR_D3D12_enable`'s graphics-binding requirements; open an OpenXR
    instance/session; create eye swapchains against the same device.
-3. Render a solid color to both eyes (no game content), using the existing
-   offscreen windowless GPU path (`scene_render_gpu_create_windowless`) as
-   the eye-texture target. Validate on real SteamVR hardware on Windows
-   first, before Linux.
+3. Render a solid color to both eyes (no game content). **Deviation from
+   the original plan, confirmed correct once implemented:** this does not
+   go through the offscreen windowless GPU path
+   (`scene_render_gpu_create_windowless`) as originally sketched here —
+   `SDL_GPU` has no API to wrap an externally-provided `VkImage` (the
+   per-eye swapchain image OpenXR hands back), so `vr_skeleton_main.c`
+   instead issues raw Vulkan commands (`vkCmdClearColorImage` inside a
+   one-off command buffer, submitted straight to the queue handle SDL_GPU
+   exposed) directly against the `VkImage` from `xrEnumerateSwapchainImages`.
+   `scene_render_gpu.c`'s SDL_GPU pipeline is untouched; this raw-Vulkan
+   path is specific to writing into OpenXR-owned swapchain images and is
+   expected to carry forward into Phase 2/3's real eye rendering.
+
+**Result — Linux x86_64 / Monado, run against `fatal-gpu` (2026-09-22):**
+partial pass. The core goal of this whole plan — OpenXR opening a session
+against the exact `VkInstance`/`VkPhysicalDevice`/`VkDevice`/queue that
+`SDL_GPU` created internally — is **confirmed working at the device layer**:
+`SDL_GetGPUDeviceProperties()` on the patched SDL fork returned a real
+`VkInstance`/`VkDevice`/queue family index, and Monado's OpenXR runtime
+accepted `xrCreateInstance` and `xrGetSystem` against it (falling back to
+its 2-view "Simulated HMD", as expected with no real headset attached).
+
+It did not reach `xrCreateSession`, `PASS`, or frame rendering. Monado's
+validation layer rejected `xrCreateSession` with
+`XR_ERROR_VALIDATION_FAILURE`, message `"Has not called
+xrGetVulkanGraphicsDevice2KHR"`. Root cause, confirmed by reading
+`PROJECTS/ROLLER/vr_skeleton_main.c`: the code calls
+`xrGetVulkanGraphicsRequirements2KHR` (as the comment there notes, "required
+... even though we already have our own device") but never calls the
+companion `xrGetVulkanGraphicsDevice2KHR`, which `XR_KHR_vulkan_enable2`
+requires the app to call (to let the runtime confirm/select the physical
+device) before `xrCreateSession` with an `XrGraphicsBindingVulkan2KHR`.
+Monado enforces this ordering at validation time; some runtimes may not.
+This is a one-call fix in `vr_skeleton_main.c` (add the
+`xrGetVulkanGraphicsDevice2KHR` call and pass its returned physical device
+into the graphics binding), not an architectural problem — Approach C's
+device-interop premise holds. Follow-up work, not resolved as part of this
+plan. See `task-6-report.md` in this plan's directory for the full observed
+log and process-launch notes (Monado's IPC loop needs a non-`/dev/null`,
+epoll-compatible stdin fd to start at all under a backgrounded SSH launch —
+an environment quirk, unrelated to the OpenXR/Vulkan interop this task set
+out to prove).
+
+Windows/SteamVR validation (the "first, before Linux" ordering originally
+specified) was not performed in this run — deferred to the user, who has
+the hardware; see the existing "Windows validation gap" self-review note.
 
 ### Phase 2 — Stereo cockpit camera
 
