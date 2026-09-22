@@ -319,11 +319,26 @@ pub fn build(b: *std.Build) void {
                 vr_exe_mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ openxr_sdk_path, "include" }) });
                 vr_exe_mod.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ openxr_sdk_path, "lib" }) });
                 vr_exe.linkSystemLibrary("openxr_loader");
+                // vr_skeleton_main.c issues raw vkCmd*/vkQueue* calls directly (it binds
+                // OpenXR to the Vulkan device SDL_GPU already created), so it needs the
+                // Vulkan loader import lib in addition to openxr_loader. Provided by the
+                // Vulkan SDK at %VULKAN_SDK%\Lib\vulkan-1.lib on Windows.
+                const vulkan_sdk_path = std.process.getEnvVarOwned(b.allocator, "VULKAN_SDK") catch @panic("Set VULKAN_SDK to an installed Vulkan SDK to build with -Dvr on Windows");
+                vr_exe_mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ vulkan_sdk_path, "Include" }) });
+                vr_exe_mod.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ vulkan_sdk_path, "Lib" }) });
+                vr_exe.linkSystemLibrary("vulkan-1");
             },
             else => {
                 // Linux: system package (confirmed present on the fatal-gpu test host as
                 // libopenxr-dev / libopenxr-loader1, headers at /usr/include/openxr/).
                 vr_exe.linkSystemLibrary("openxr_loader");
+                // vr_skeleton_main.c issues raw vkCmd*/vkQueue* calls directly against the
+                // Vulkan device SDL_GPU created (OpenXR only binds to it, it doesn't own
+                // it), so the Vulkan loader itself must be linked too, not just openxr_loader.
+                // System package: libvulkan-dev (headers at /usr/include/vulkan/, provides
+                // the libvulkan.so symlink -lvulkan needs; libvulkan1 alone only has the
+                // versioned libvulkan.so.1).
+                vr_exe.linkSystemLibrary("vulkan");
             },
         }
         b.installArtifact(vr_exe);
