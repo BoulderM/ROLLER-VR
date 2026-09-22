@@ -121,7 +121,7 @@ camera/projection substitution point (→ `build_mvp_vr_eye()`), resolution
 assumptions (→ no blocker), scenery streaming (→ low risk). No code was kept
 from this phase; findings are recorded here.
 
-### Phase 1 — Walking skeleton (Linux/Monado leg run 2026-09-22 — partial pass, one concrete bug found)
+### Phase 1 — Walking skeleton (Linux/Monado leg, 2026-09-22 — two bugs found and fixed in turn; final run still short of PASS)
 
 1. Patch `Zizin13/SDL`'s Vulkan and D3D12 `SDL_GPU` backends to expose
    `SDL_PROP_GPU_DEVICE_VULKAN_{INSTANCE,PHYSICAL_DEVICE,DEVICE}_POINTER` /
@@ -144,38 +144,56 @@ from this phase; findings are recorded here.
    path is specific to writing into OpenXR-owned swapchain images and is
    expected to carry forward into Phase 2/3's real eye rendering.
 
-**Result — Linux x86_64 / Monado, run against `fatal-gpu` (2026-09-22):**
-partial pass. The core goal of this whole plan — OpenXR opening a session
-against the exact `VkInstance`/`VkPhysicalDevice`/`VkDevice`/queue that
-`SDL_GPU` created internally — is **confirmed working at the device layer**:
-`SDL_GetGPUDeviceProperties()` on the patched SDL fork returned a real
-`VkInstance`/`VkDevice`/queue family index, and Monado's OpenXR runtime
-accepted `xrCreateInstance` and `xrGetSystem` against it (falling back to
-its 2-view "Simulated HMD", as expected with no real headset attached).
+**Result — Linux x86_64 / Monado, two runs against `fatal-gpu` (2026-09-22):**
+still short of `PASS`, but each run confirmed more of the pipeline works,
+and the two blockers found so far are both narrow, independent, one-call
+OpenXR-sequencing omissions in `vr_skeleton_main.c` — not architecture
+problems. Approach C's device-interop premise (OpenXR binding to the exact
+`VkInstance`/`VkPhysicalDevice`/`VkDevice`/queue `SDL_GPU` created
+internally) is now confirmed working **all the way through session
+creation, swapchain creation, and the full session-state lifecycle to
+`FOCUSED`, and into the first frame's Vulkan render commands** — this is
+strong evidence the architecture is sound; what remains is finishing out
+`vr_skeleton_main.c`'s OpenXR call sequence, not revisiting the design.
 
-It did not reach `xrCreateSession`, `PASS`, or frame rendering. Monado's
-validation layer rejected `xrCreateSession` with
-`XR_ERROR_VALIDATION_FAILURE`, message `"Has not called
-xrGetVulkanGraphicsDevice2KHR"`. Root cause, confirmed by reading
-`PROJECTS/ROLLER/vr_skeleton_main.c`: the code calls
-`xrGetVulkanGraphicsRequirements2KHR` (as the comment there notes, "required
-... even though we already have our own device") but never calls the
+*First run:* `SDL_GetGPUDeviceProperties()` on the patched SDL fork
+returned a real `VkInstance`/`VkDevice`/queue family index; Monado's OpenXR
+runtime accepted `xrCreateInstance` and `xrGetSystem` against it (2-view
+"Simulated HMD" fallback, as expected with no real headset attached). It
+stopped at `xrCreateSession`, which Monado rejected with
+`XR_ERROR_VALIDATION_FAILURE: "Has not called xrGetVulkanGraphicsDevice2KHR"`
+— the code called `xrGetVulkanGraphicsRequirements2KHR` but never the
 companion `xrGetVulkanGraphicsDevice2KHR`, which `XR_KHR_vulkan_enable2`
-requires the app to call (to let the runtime confirm/select the physical
-device) before `xrCreateSession` with an `XrGraphicsBindingVulkan2KHR`.
-Monado enforces this ordering at validation time; some runtimes may not.
-This is a one-call fix in `vr_skeleton_main.c` (add the
-`xrGetVulkanGraphicsDevice2KHR` call and pass its returned physical device
-into the graphics binding), not an architectural problem — Approach C's
-device-interop premise holds. Follow-up work, not resolved as part of this
-plan. See `task-6-report.md` in this plan's directory for the full observed
-log and process-launch notes (Monado's IPC loop needs a non-`/dev/null`,
-epoll-compatible stdin fd to start at all under a backgrounded SSH launch —
-an environment quirk, unrelated to the OpenXR/Vulkan interop this task set
-out to prove).
+requires before `xrCreateSession` with an `XrGraphicsBindingVulkan2KHR`.
+
+*Fix + re-run:* commit `624c07e` added the missing
+`xrGetVulkanGraphicsDevice2KHR` call. Rebuilt (`zig build -Dvr`, exit 0),
+redeployed to `fatal-gpu`, re-run with the identical procedure. This time
+`xrCreateSession` **succeeded**, `xrEnumerateViewConfigurationViews`
+returned view count 2 (896×1007 recommended per eye), both swapchains were
+created, and the session state progressed correctly through the full
+healthy sequence — `IDLE`(1) → `READY`(2) → `xrBeginSession` → `SYNCHRONIZED`(3)
+→ `VISIBLE`(4) → `FOCUSED`(5) (numeric values cross-checked against
+`/usr/include/openxr/openxr.h` on `fatal-gpu`; note `READY = 2`, not `3` as
+originally guessed in planning — harmless, but corrected here). The first
+`xrWaitFrame`/`xrBeginFrame` succeeded and the per-eye Vulkan clear commands
+ran. It then stopped at the first `xrEndFrame`, which Monado rejected with
+`XR_ERROR_VALIDATION_FAILURE: "xrEndFrame(frameEndInfo->layers[0]->space ==
+XR_NULL_HANDLE) XrSpace must not be XR_NULL_HANDLE"` — `vr_skeleton_main.c`
+builds its `XrCompositionLayerProjection` but never calls
+`xrCreateReferenceSpace` or sets `projection_layer.space`, leaving it
+`XR_NULL_HANDLE`. A second, independent one-call fix (create a reference
+space once after session creation, assign its handle to `projection_layer.space`
+each frame) — not resolved as part of this plan; follow-up work.
+
+See `task-6-report.md` in this plan's directory for the full verbatim
+output of both runs and the process-launch notes (Monado's IPC loop needs a
+non-`/dev/null`, epoll-compatible stdin fd — e.g. a bash process-substitution
+pipe — to start at all under a backgrounded SSH launch; an environment
+quirk, unrelated to the OpenXR/Vulkan interop this task set out to prove).
 
 Windows/SteamVR validation (the "first, before Linux" ordering originally
-specified) was not performed in this run — deferred to the user, who has
+specified) was not performed in either run — deferred to the user, who has
 the hardware; see the existing "Windows validation gap" self-review note.
 
 ### Phase 2 — Stereo cockpit camera
