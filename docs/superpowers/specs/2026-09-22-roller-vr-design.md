@@ -200,8 +200,39 @@ task set out to prove).
 Windows/SteamVR validation (the "first, before Linux" ordering originally
 specified) was not performed in any of the three runs — deferred to the
 user, who has the hardware; see the existing "Windows validation gap"
-self-review note. Phase 1's Linux/Monado leg is complete; Phase 2 can now
-build on a confirmed-working device-interop foundation.
+self-review note. Separately, and more fundamentally: the Windows `-Dvr`
+build code path itself (the `build.zig` linking logic against
+`VULKAN_SDK`/`OPENXR_SDK_PATH`, added during Task 5) has never actually been
+compiled even once, on any platform — this dev environment has no Windows
+toolchain and no cross-compile toolchain with those SDKs available, so it is
+unverified in a stronger sense than "no hardware to run it on"; it may not
+even build. Phase 1's Linux/Monado leg is complete; Phase 2 can now build on
+a confirmed-working device-interop foundation, but the Windows build path
+still needs a first compile, not just a first run.
+
+**Lessons for Phase 2 (from Task 6 hardware bugs + final review):** the two
+real bugs found on hardware during Task 6 (missing
+`xrGetVulkanGraphicsDevice2KHR`, missing `xrCreateReferenceSpace`), plus
+several minor issues caught in this branch's final code review, share one
+root cause — Phase 1's OpenXR call sequence was written from general
+knowledge of the API shape rather than checked against
+`XR_KHR_vulkan_enable2`'s Valid Usage requirements or the official Khronos
+`hello_xr` sample. Monado's simulated HMD is an unusually permissive test
+runtime and didn't catch everything a stricter real compositor might reject
+— notably, SDL's Vulkan device/instance were never told what extensions the
+OpenXR runtime requires (the spec's intended flow for that is
+`xrCreateVulkanInstanceKHR`/`xrCreateVulkanDeviceKHR`, which this walking
+skeleton deliberately bypasses since it uses an already-existing device
+instead). Recommendation for whoever writes the Phase 2 plan: (a) run
+against the OpenXR core validation API layer
+(`XR_APILAYER_LUNARG_core_validation`) rather than relying on
+hardware-testing alone; (b) author the plan directly against the spec's
+Valid Usage sections and the `hello_xr` sample rather than from recall; and
+(c) resolve `VkQueue` external synchronization between SDL_GPU's own
+internal command submission and future VR rendering before Phase 2 submits
+real scene content to the same queue — Vulkan requires this to be
+externally synchronized, and right now it's only safe because the walking
+skeleton and SDL_GPU never submit concurrently.
 
 ### Phase 2 — Stereo cockpit camera
 
@@ -265,3 +296,27 @@ but not blocked by anything in it either.
   vs. a maintained patch series).
 - Whether the VR build's `-Dvr` option should also gate CI (`ci.yml`,
   `build.yml`) or stay a manual/local-only build path until Phase 3 lands.
+
+## Known limitations blocking upstream
+
+These are accepted, deliberate, **local-only** provisional states for
+continued development on the `vr-phase1-impl` branch on this dev LXC — not
+something that should be merged toward `master` or exercised in CI as-is.
+
+- `build.zig.zon`'s `.sdl` dependency currently resolves through a
+  git-tracked symlink (`external/sdl-vr-fork`) pointing at an absolute host
+  path (`/root/sdl-vr-fork`), which only exists on this specific development
+  LXC.
+- This is **not** gated behind `-Dvr` — Zig's `.zon` manifest has no
+  conditionals — so it affects the default, non-VR build too: `zig build`,
+  `zig build test-snapshots`, `zig build web`, and both GitHub Actions
+  workflows would all fail on any other machine, including CI.
+- It also means the SDL dependency currently has no `.hash` integrity pin
+  (Zig only hash-verifies URL-based dependencies, not local paths) — no
+  reproducibility guarantee for ROLLER's largest third-party dependency right
+  now.
+- Before this can be merged toward `master` or run in CI, the patched SDL
+  fork branch (`vr-gpu-properties`, currently only pushed to nowhere — it's a
+  local clone at `/root/sdl-vr-fork`) needs to be pushed to a real git
+  remote, and `build.zig.zon` needs to go back to a `git+https://...#<commit-sha>`
+  URL with a proper `.hash`.

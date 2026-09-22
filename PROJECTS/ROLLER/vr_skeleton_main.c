@@ -134,6 +134,12 @@ int main(int argc, char **argv)
     if (XR_FAILED(xr_result)) {
         fail_xr("xrGetVulkanGraphicsDevice2KHR failed", xr_result);
     }
+    if (xr_required_physical_device != vk_physical_device) {
+        fail("SDL_GPU's Vulkan physical device does not match the physical device the OpenXR "
+             "runtime requires (xrGetVulkanGraphicsDevice2KHR) -- this can happen on multi-GPU "
+             "systems; creating the session against a mismatched device/physicalDevice pair is "
+             "undefined behavior per the Vulkan spec");
+    }
 
     /* --- 4. Create the session against our existing Vulkan device --- */
     XrGraphicsBindingVulkan2KHR vk_binding = {
@@ -163,6 +169,11 @@ int main(int argc, char **argv)
                                                    0, &view_count, NULL);
     if (XR_FAILED(xr_result) || view_count == 0) {
         fail_xr("xrEnumerateViewConfigurationViews (count) failed", xr_result);
+    }
+    if (view_count > 8) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "view count %u exceeds supported maximum of 8", view_count);
+        fail(msg);
     }
     XrViewConfigurationView *view_configs = calloc(view_count, sizeof(XrViewConfigurationView));
     for (Uint32 i = 0; i < view_count; i++) {
@@ -308,13 +319,23 @@ int main(int argc, char **argv)
                 }
 
                 Uint32 xr_image_count = 0;
-                xrEnumerateSwapchainImages(swapchains[i], 0, &xr_image_count, NULL);
+                xr_result = xrEnumerateSwapchainImages(swapchains[i], 0, &xr_image_count, NULL);
+                if (XR_FAILED(xr_result)) {
+                    fail_xr("xrEnumerateSwapchainImages failed", xr_result);
+                }
                 XrSwapchainImageVulkan2KHR *xr_images = calloc(xr_image_count, sizeof(XrSwapchainImageVulkan2KHR));
                 for (Uint32 k = 0; k < xr_image_count; k++) {
                     xr_images[k].type = XR_TYPE_SWAPCHAIN_IMAGE_VULKAN2_KHR;
                 }
-                xrEnumerateSwapchainImages(swapchains[i], xr_image_count, &xr_image_count,
-                                            (XrSwapchainImageBaseHeader *)xr_images);
+                xr_result = xrEnumerateSwapchainImages(swapchains[i], xr_image_count, &xr_image_count,
+                                                        (XrSwapchainImageBaseHeader *)xr_images);
+                if (XR_FAILED(xr_result)) {
+                    fail_xr("xrEnumerateSwapchainImages failed", xr_result);
+                }
+                if (image_index >= xr_image_count) {
+                    fail("swapchain image index from xrAcquireSwapchainImage is out of range "
+                         "of the images returned by xrEnumerateSwapchainImages");
+                }
                 VkImage target_image = xr_images[image_index].image;
                 free(xr_images);
 
