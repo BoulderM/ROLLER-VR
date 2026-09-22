@@ -54,6 +54,7 @@ pub fn build(b: *std.Build) void {
     const sdl_android_include = b.option([]const u8, "sdl-android-include", "Path to SDL Android AAR prefab include directory") orelse "";
     const sdl_android_lib = b.option([]const u8, "sdl-android-lib", "Path to SDL Android AAR shared library directory") orelse "";
     const crash_debug = b.option(bool, "crash-debug", "Enable crash dump friendly C build flags") orelse false;
+    const build_vr = b.option(bool, "vr", "Build the VR walking-skeleton executable (Linux/Windows only, requires OpenXR dev packages)") orelse false;
     // ARM/AArch64 targets default `char` to unsigned, unlike the x86/Windows
     // toolchain this codebase was originally written against. Lots of game
     // state (gear, etc.) is stored in a byte and read back via `(char)` casts
@@ -284,6 +285,49 @@ pub fn build(b: *std.Build) void {
     }
 
     b.installArtifact(exe);
+
+    if (build_vr) {
+        const sdl = b.dependency("sdl", .{
+            .target = target,
+            .optimize = optimize,
+            .sanitize_c = .off,
+            .lto = .none,
+        });
+        const vr_exe_mod = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        vr_exe_mod.addIncludePath(sdl.builder.path("include"));
+        vr_exe_mod.addCSourceFiles(.{
+            .flags = c_flags,
+            .files = &.{"PROJECTS/ROLLER/vr_skeleton_main.c"},
+        });
+
+        const vr_exe = b.addExecutable(.{
+            .name = "vr_skeleton",
+            .root_module = vr_exe_mod,
+        });
+        vr_exe.linkLibrary(sdl.artifact("SDL3"));
+        switch (target.result.os.tag) {
+            .windows => {
+                // OpenXR SDK loader .lib is expected at OPENXR_SDK_PATH\lib\openxr_loader.lib
+                // and headers at OPENXR_SDK_PATH\include, matching the official Khronos
+                // OpenXR-SDK release layout. This is a manual dependency for now (no Zig
+                // package pinned yet) — set the env var before building with -Dvr on Windows.
+                const openxr_sdk_path = std.process.getEnvVarOwned(b.allocator, "OPENXR_SDK_PATH") catch @panic("Set OPENXR_SDK_PATH to an extracted OpenXR-SDK release to build with -Dvr on Windows");
+                vr_exe_mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ openxr_sdk_path, "include" }) });
+                vr_exe_mod.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ openxr_sdk_path, "lib" }) });
+                vr_exe.linkSystemLibrary("openxr_loader");
+            },
+            else => {
+                // Linux: system package (confirmed present on the fatal-gpu test host as
+                // libopenxr-dev / libopenxr-loader1, headers at /usr/include/openxr/).
+                vr_exe.linkSystemLibrary("openxr_loader");
+            },
+        }
+        b.installArtifact(vr_exe);
+    }
 
     if (python_checks) {
         const scene_render_seam_check = b.addSystemCommand(&.{
