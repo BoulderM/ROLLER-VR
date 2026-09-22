@@ -200,6 +200,21 @@ int main(int argc, char **argv)
     }
     printf("vr_skeleton: created %u swapchains\n", view_count);
 
+    /* --- 6b. Create a reference space for the projection layer. A composition
+     * layer's `space` must reference a real, previously-created XrSpace — this
+     * skeleton doesn't do head tracking yet (Phase 2), so LOCAL with an
+     * identity pose is enough to satisfy the API contract. */
+    XrSpace local_space = XR_NULL_HANDLE;
+    XrReferenceSpaceCreateInfo space_create_info = {
+        .type = XR_TYPE_REFERENCE_SPACE_CREATE_INFO,
+        .referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL,
+        .poseInReferenceSpace = { .orientation = { .w = 1.0f }, .position = { 0 } },
+    };
+    xr_result = xrCreateReferenceSpace(session, &space_create_info, &local_space);
+    if (XR_FAILED(xr_result)) {
+        fail_xr("xrCreateReferenceSpace failed", xr_result);
+    }
+
     /* --- 7. Vulkan command pool/buffer for the clear commands --- */
     VkCommandPoolCreateInfo pool_create_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -379,6 +394,7 @@ int main(int argc, char **argv)
 
         XrCompositionLayerProjection projection_layer = {
             .type = XR_TYPE_COMPOSITION_LAYER_PROJECTION,
+            .space = local_space,
             .viewCount = view_count,
             .views = projection_views,
         };
@@ -410,6 +426,7 @@ int main(int argc, char **argv)
     }
     free(swapchains);
     free(view_configs);
+    xrDestroySpace(local_space);
     if (session_running) {
         xrEndSession(session);
     }
