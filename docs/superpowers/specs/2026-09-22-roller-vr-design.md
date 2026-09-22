@@ -121,7 +121,7 @@ camera/projection substitution point (→ `build_mvp_vr_eye()`), resolution
 assumptions (→ no blocker), scenery streaming (→ low risk). No code was kept
 from this phase; findings are recorded here.
 
-### Phase 1 — Walking skeleton (Linux/Monado leg, 2026-09-22 — two bugs found and fixed in turn; final run still short of PASS)
+### Phase 1 — Walking skeleton (Linux/Monado leg, 2026-09-22 — COMPLETE, PASS)
 
 1. Patch `Zizin13/SDL`'s Vulkan and D3D12 `SDL_GPU` backends to expose
    `SDL_PROP_GPU_DEVICE_VULKAN_{INSTANCE,PHYSICAL_DEVICE,DEVICE}_POINTER` /
@@ -144,57 +144,64 @@ from this phase; findings are recorded here.
    path is specific to writing into OpenXR-owned swapchain images and is
    expected to carry forward into Phase 2/3's real eye rendering.
 
-**Result — Linux x86_64 / Monado, two runs against `fatal-gpu` (2026-09-22):**
-still short of `PASS`, but each run confirmed more of the pipeline works,
-and the two blockers found so far are both narrow, independent, one-call
-OpenXR-sequencing omissions in `vr_skeleton_main.c` — not architecture
-problems. Approach C's device-interop premise (OpenXR binding to the exact
-`VkInstance`/`VkPhysicalDevice`/`VkDevice`/queue `SDL_GPU` created
-internally) is now confirmed working **all the way through session
-creation, swapchain creation, and the full session-state lifecycle to
-`FOCUSED`, and into the first frame's Vulkan render commands** — this is
-strong evidence the architecture is sound; what remains is finishing out
-`vr_skeleton_main.c`'s OpenXR call sequence, not revisiting the design.
+**Result — Linux x86_64 / Monado, three runs against `fatal-gpu` (2026-09-22):**
+**`vr_skeleton: PASS`, exit code 0.** OpenXR opens a session against the
+exact `VkInstance`/`VkPhysicalDevice`/`VkDevice`/queue `SDL_GPU` created
+internally (Approach C, confirmed end-to-end), renders 120 frames to two
+independent per-eye swapchains (left eye cleared red, right eye blue —
+cheap visual proof the swapchains are genuinely separate targets, not the
+same image cleared twice), and shuts down cleanly. This is Phase 1's
+walking-skeleton goal, fully achieved.
 
-*First run:* `SDL_GetGPUDeviceProperties()` on the patched SDL fork
-returned a real `VkInstance`/`VkDevice`/queue family index; Monado's OpenXR
-runtime accepted `xrCreateInstance` and `xrGetSystem` against it (2-view
-"Simulated HMD" fallback, as expected with no real headset attached). It
-stopped at `xrCreateSession`, which Monado rejected with
-`XR_ERROR_VALIDATION_FAILURE: "Has not called xrGetVulkanGraphicsDevice2KHR"`
-— the code called `xrGetVulkanGraphicsRequirements2KHR` but never the
-companion `xrGetVulkanGraphicsDevice2KHR`, which `XR_KHR_vulkan_enable2`
-requires before `xrCreateSession` with an `XrGraphicsBindingVulkan2KHR`.
+Three issues surfaced across the three runs, each a narrow, single-call
+OpenXR-sequencing gap in `vr_skeleton_main.c` — never an architecture
+problem; Approach C's device-interop premise held at every step:
 
-*Fix + re-run:* commit `624c07e` added the missing
-`xrGetVulkanGraphicsDevice2KHR` call. Rebuilt (`zig build -Dvr`, exit 0),
-redeployed to `fatal-gpu`, re-run with the identical procedure. This time
-`xrCreateSession` **succeeded**, `xrEnumerateViewConfigurationViews`
-returned view count 2 (896×1007 recommended per eye), both swapchains were
-created, and the session state progressed correctly through the full
-healthy sequence — `IDLE`(1) → `READY`(2) → `xrBeginSession` → `SYNCHRONIZED`(3)
-→ `VISIBLE`(4) → `FOCUSED`(5) (numeric values cross-checked against
-`/usr/include/openxr/openxr.h` on `fatal-gpu`; note `READY = 2`, not `3` as
-originally guessed in planning — harmless, but corrected here). The first
-`xrWaitFrame`/`xrBeginFrame` succeeded and the per-eye Vulkan clear commands
-ran. It then stopped at the first `xrEndFrame`, which Monado rejected with
-`XR_ERROR_VALIDATION_FAILURE: "xrEndFrame(frameEndInfo->layers[0]->space ==
-XR_NULL_HANDLE) XrSpace must not be XR_NULL_HANDLE"` — `vr_skeleton_main.c`
-builds its `XrCompositionLayerProjection` but never calls
-`xrCreateReferenceSpace` or sets `projection_layer.space`, leaving it
-`XR_NULL_HANDLE`. A second, independent one-call fix (create a reference
-space once after session creation, assign its handle to `projection_layer.space`
-each frame) — not resolved as part of this plan; follow-up work.
+1. *Run 1:* stopped at `xrCreateSession` —
+   `XR_ERROR_VALIDATION_FAILURE: "Has not called xrGetVulkanGraphicsDevice2KHR"`.
+   The code called `xrGetVulkanGraphicsRequirements2KHR` but never the
+   companion `xrGetVulkanGraphicsDevice2KHR`, which `XR_KHR_vulkan_enable2`
+   requires before `xrCreateSession` with an `XrGraphicsBindingVulkan2KHR`.
+   **Fixed in commit `624c07e`.**
+2. *Run 2 (after fix 1):* `xrCreateSession` succeeded, view count 2
+   (896×1007 recommended per eye), both swapchains created, session state
+   progressed correctly through the full healthy sequence — `IDLE`(1) →
+   `READY`(2) → `xrBeginSession` → `SYNCHRONIZED`(3) → `VISIBLE`(4) →
+   `FOCUSED`(5) (numeric values cross-checked against
+   `/usr/include/openxr/openxr.h` on `fatal-gpu`; note `READY = 2`, not `3`
+   as originally guessed in planning — harmless, corrected here). The first
+   `xrWaitFrame`/`xrBeginFrame` succeeded and the per-eye Vulkan clear
+   commands ran, but it then stopped at the first `xrEndFrame` —
+   `XR_ERROR_VALIDATION_FAILURE: "xrEndFrame(frameEndInfo->layers[0]->space
+   == XR_NULL_HANDLE) XrSpace must not be XR_NULL_HANDLE"`. The code built
+   its `XrCompositionLayerProjection` but never called
+   `xrCreateReferenceSpace` or set `projection_layer.space`, leaving it
+   `XR_NULL_HANDLE`. **Fixed in commit `5ce666b`** (one-time
+   `XR_REFERENCE_SPACE_TYPE_LOCAL` space created after swapchain creation,
+   assigned to `projection_layer.space` each frame, destroyed at cleanup).
+3. *Run 3 (after fix 2):* **all 120 frames rendered, `vr_skeleton: PASS`,
+   exit code 0.** One residual, non-fatal finding in the log:
+   `XR_ERROR_SESSION_NOT_STOPPING in xrEndSession: Session is not stopping`
+   — the cleanup path calls `xrEndSession()` unconditionally whenever
+   `session_running` is true, without checking the session is actually in
+   `STOPPING` state (it's still `FOCUSED`, since the loop exits by hitting
+   the 120-frame count rather than by receiving a `STOPPING` event from the
+   runtime) and without checking the call's return value, so this doesn't
+   fail the program. Not a blocker for Phase 1; flagged as a minor
+   cleanup-path imperfection for Phase 2, not resolved as part of this plan.
 
 See `task-6-report.md` in this plan's directory for the full verbatim
-output of both runs and the process-launch notes (Monado's IPC loop needs a
-non-`/dev/null`, epoll-compatible stdin fd — e.g. a bash process-substitution
-pipe — to start at all under a backgrounded SSH launch; an environment
-quirk, unrelated to the OpenXR/Vulkan interop this task set out to prove).
+output of all three runs and the process-launch notes (Monado's IPC loop
+needs a non-`/dev/null`, epoll-compatible stdin fd — e.g. a bash
+process-substitution pipe — to start at all under a backgrounded SSH
+launch; an environment quirk, unrelated to the OpenXR/Vulkan interop this
+task set out to prove).
 
 Windows/SteamVR validation (the "first, before Linux" ordering originally
-specified) was not performed in either run — deferred to the user, who has
-the hardware; see the existing "Windows validation gap" self-review note.
+specified) was not performed in any of the three runs — deferred to the
+user, who has the hardware; see the existing "Windows validation gap"
+self-review note. Phase 1's Linux/Monado leg is complete; Phase 2 can now
+build on a confirmed-working device-interop foundation.
 
 ### Phase 2 — Stereo cockpit camera
 
