@@ -28,8 +28,8 @@ build (see Phase 5).
 - Matching the legacy DOS software renderer's output pixel-for-pixel in VR
   mode (the rendering-snapshot test suite's parity guarantee applies to the
   existing flat renderers, not the new VR eye-render path).
-- Any change to `ROLLER-matching` or `ROLLER-X`. This work stays on a
-  `roller-vr` branch of `ROLLER` only.
+- Any change to `ROLLER-matching`. This work stays on a `roller-vr` branch
+  of `ROLLER` only.
 
 ## Architecture decision: device interop (Approach C)
 
