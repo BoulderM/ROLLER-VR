@@ -112,11 +112,34 @@ int main(int argc, char **argv)
         fail_xr("xrGetVulkanGraphicsRequirements2KHR failed", xr_result);
     }
 
+    /* Also required by the spec (XR_KHR_vulkan_enable2) when the app supplies
+     * its own already-created Vulkan device, as we do here via SDL_GPU: the
+     * runtime must be told which physical device we're using before
+     * xrCreateSession, even though we already know it ourselves. Skipping
+     * this call makes xrCreateSession fail with XR_ERROR_VALIDATION_FAILURE
+     * ("Has not called xrGetVulkanGraphicsDevice2KHR") on at least Monado. */
+    PFN_xrGetVulkanGraphicsDevice2KHR pfn_get_vk_device = NULL;
+    xr_result = xrGetInstanceProcAddr(instance, "xrGetVulkanGraphicsDevice2KHR",
+                                       (PFN_xrVoidFunction *)&pfn_get_vk_device);
+    if (XR_FAILED(xr_result) || !pfn_get_vk_device) {
+        fail_xr("failed to load xrGetVulkanGraphicsDevice2KHR", xr_result);
+    }
+    XrVulkanGraphicsDeviceGetInfoKHR vk_device_get_info = {
+        .type = XR_TYPE_VULKAN_GRAPHICS_DEVICE_GET_INFO_KHR,
+        .systemId = system_id,
+        .vulkanInstance = vk_instance,
+    };
+    VkPhysicalDevice xr_required_physical_device = VK_NULL_HANDLE;
+    xr_result = pfn_get_vk_device(instance, &vk_device_get_info, &xr_required_physical_device);
+    if (XR_FAILED(xr_result)) {
+        fail_xr("xrGetVulkanGraphicsDevice2KHR failed", xr_result);
+    }
+
     /* --- 4. Create the session against our existing Vulkan device --- */
     XrGraphicsBindingVulkan2KHR vk_binding = {
         .type = XR_TYPE_GRAPHICS_BINDING_VULKAN2_KHR,
         .instance = vk_instance,
-        .physicalDevice = vk_physical_device,
+        .physicalDevice = xr_required_physical_device,
         .device = vk_device,
         .queueFamilyIndex = vk_queue_family_index,
         .queueIndex = 0,
