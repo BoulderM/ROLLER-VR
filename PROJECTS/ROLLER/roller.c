@@ -117,6 +117,7 @@ static int s_iGPUPresentSkipFrames = 0;
 static bool s_bAndroidDefaultConfigPending = false;
 #endif
 int g_bVRMode = 0;
+int g_iVRMaxFrames = 0;   /* --vr-frames N: stop after N stereo frames are presented (0 = unlimited) */
 char g_szVRTrackPath[260] = { 0 };
 bool g_bPaletteSet = false;
 float g_fDrawDistanceFraction = 1.0f;

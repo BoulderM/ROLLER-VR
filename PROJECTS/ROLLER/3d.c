@@ -633,6 +633,7 @@ static void print_usage(FILE *f, const char *argv0)
   cli_fprintf(f, " --out DIR              output directory for snapshot PNGs (--snapshot only)\n");
   cli_fprintf(f, " --gpu-parity BACKEND   run F-S1 parity (vulkan, direct3d12, or metal)\n");
   cli_fprintf(f, " --vr                    boot headless into VR mode (windowless GPU device, direct race start)\n");
+  cli_fprintf(f, " --vr-frames N           with --vr: quit cleanly after N stereo frames (default: run until closed)\n");
   cli_fprintf(f, " --track-path PATH       load a track directly from an absolute path\n");
   cli_fprintf(f, " --track-asset-root DIR  resolve direct-track assets from this document root first\n");
   cli_fprintf(f, " --track-fallback-root DIR  override the direct-track FATDATA fallback root\n");
@@ -3036,6 +3037,20 @@ int main(int argc, const char **argv, const char **envp)
     } else if (strcmp(argv[i], "--vr") == 0) {
       g_bVRMode = 1;
       consumed = 1;
+    } else if (strcmp(argv[i], "--vr-frames") == 0) {
+      if (i + 1 < argc) {
+        char *pEnd = NULL;
+        long lFrames = strtol(argv[i + 1], &pEnd, 10);
+        if (!pEnd || *pEnd != '\0' || lFrames < 0 || lFrames > 0x7FFFFFFF) {
+          cli_fprintf(stderr, "ERROR: '--vr-frames' expects a non-negative integer\n");
+          return 1;
+        }
+        g_iVRMaxFrames = (int)lFrames;
+        consumed = 2;
+      } else {
+        cli_fprintf(stderr, "ERROR: '--vr-frames' needs an argument\n");
+        return 1;
+      }
     } else if (strcmp(argv[i], "--track-path") == 0) {
       if (i + 1 < argc) {
         g_szDirectTrackPath = argv[i + 1];
@@ -3866,6 +3881,15 @@ void play_game_init()
       MenuRenderer *pMR = GetMenuRenderer();
       if (pMR && menu_render_get_pending_mode(pMR) == MENU_RENDER_GPU)
           game_render_set_mode(g_pGameRenderer, GAME_RENDER_GPU);
+#if defined(ROLLER_VR_BUILD)
+      /* VR mode has no menu renderer (windowless, boots straight into the
+       * race), so the check above never selects GPU mode and the game renderer
+       * would stay in its software default -- vr_present_stereo_frame() only
+       * works on the GPU path. Found on first hardware run: the software car
+       * path segfaulted in DisplayCarWithPose(). */
+      if (g_bVRMode)
+          game_render_set_mode(g_pGameRenderer, GAME_RENDER_GPU);
+#endif
   }
   if (intro)
       game_render_set_force_gpu_load(g_pGameRenderer, true);

@@ -1,6 +1,6 @@
 # ROLLER VR — Phase 2: Stereo Cockpit Camera
 
-**Status:** Approved for planning
+**Status:** Implemented; hardware run on `fatal-gpu` (Monado simulated HMD) passed with caveats -- see "Outcome" at the end. No physical headset was ever used.
 **Date:** 2026-09-23
 **Branch:** `roller-vr`
 **Depends on:** `docs/superpowers/specs/2026-09-22-roller-vr-design.md` (overall VR design), Phase 1 (`docs/superpowers/plans/2026-09-22-vr-phase1-walking-skeleton.md`, complete/merged)
@@ -92,3 +92,29 @@ No human visual/headset check is performed — `fatal-gpu` has no physical HMD a
 - Author new OpenXR/Vulkan calls against spec Valid Usage sections + `hello_xr`, not from memory.
 - Run against `XR_APILAYER_LUNARG_core_validation`.
 - Resolve VkQueue external synchronization between SDL_GPU's own submits and VR rendering before submitting real scene content to the shared queue — addressed here via fence-wait serialization (Section 3).
+
+## Outcome (2026-09-23, `fatal-gpu` + Monado simulated HMD)
+
+**Result: PASS on the spec'd criteria, with caveats below. No human wore or looked at a headset.**
+
+Setup: `zig build -Dvr -Doptimize=ReleaseSafe` -> `roller-vr` copied to `fatal-gpu`, real Xorg :1 (DRI3), `monado-service` running (the runtime is an IPC client -- without the service `xrCreateInstance` fails; note `monado-service` needs a non-/dev/null stdin, e.g. `sleep infinity | monado-service`), then
+`roller-vr --vr --vr-frames 300 --whiplash-root <dir> --track-path <dir>/fatdata/TRACK1.TRK`.
+
+- **Exit code 0**, game-initiated quit (`--vr-frames N` sets `quit_game`) reached `frontend_shutdown_finish()` -> `vr_shutdown()` -> clean process exit. (`--vr-frames N` is a Phase 2 addition; without it `roller-vr --vr` runs until closed.)
+- **Both eyes submitted every rendered tick**: 300/300 (and 2500/2500 in a longer run) `xrEndFrame` calls with `viewCount = 2`, `layerCount = 1`; the eyes are 896x1007 each.
+- **Live head pose**: Monado's simulated HMD sways, and `view[0]` position/orientation change frame to frame in the log (e.g. pos x from 0.020 to 0.120 to -0.079 over 300 frames), so `xrLocateViews()` is wired end-to-end.
+- **Actual pixels seen** (a screenshot of Monado's desktop compositor window, not a headset): a side-by-side stereo pair of the live game scene (sky, track, walls, cars), both eyes populated and slightly different viewpoints.
+- **`XR_APILAYER_LUNARG_core_validation`**: ran (initialize/destroy debug lines confirm it was active); zero warnings/errors.
+- **`VK_LAYER_KHRONOS_validation` with synchronization validation** (extra, not in the original criteria): found and fixed two real bugs in `vr_runtime.c` (see below). Remaining messages are not from Phase 2 code: 12+12 `VUID-VkImageMemoryBarrier-None-09120`/`image-09118` (Monado's own client-side release barrier to `VK_QUEUE_FAMILY_EXTERNAL` on a `VkInstance` that SDL creates at `apiVersion` 1.0 without the external-memory extensions the OpenXR runtime asks for via `xrGetVulkanDeviceExtensionsKHR`) and 2x `VUID-VkShaderModuleCreateInfo-pCode-08737` (pre-existing `HUDPixelUniforms` std140 alignment in `game_hud_pixel.hlsl`).
+
+**Bugs found by the first real run and fixed:**
+1. `roller-vr` segfaulted in the software car renderer: VR mode has no menu renderer, so `game_render_set_mode(GPU)` was never called and the game renderer stayed in its software default. `3d.c` now forces GPU mode when `g_bVRMode`.
+2. Sync-validation hazards on the eye copy: all barrier access masks were 0. Now `TRANSFER_READ`/`TRANSFER_WRITE` in the pre-copy `dstAccessMask` and post-copy `srcAccessMask`. Also added `XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT` to the eye swapchains (Monado transitions to `COLOR_ATTACHMENT_OPTIMAL`; the missing usage bit caused 20 `oldLayout-01208` errors).
+
+**Caveats / not covered:**
+- The run plays the game's intro/attract-mode race (`intro = -1`, `replaytype = 2` in `main()`), not a player-driven race. After ~800 rendered frames the demo ends and the frontend falls through RESULTS -> TITLE -> the intro race again; for that stretch (~1000 ticks) no menu is rendered in VR and empty (`layerCount = 0`) frames are submitted. Player-controlled racing in VR was not exercised.
+- Head-pose-driven view was checked in logs and via one screenshot pair only; comfort, IPD (`VR_METERS_TO_WORLD` = 100.0 is a placeholder), HUD (not rendered), and 2-player (player 1 only) are unchanged Phase 2 limitations.
+- Only Monado's simulated HMD/desktop compositor was tested. The SDL-owned Vulkan device not enabling the runtime-requested extensions (above) is likely to matter for other runtimes (SteamVR, Windows) -- untested.
+- Windows: `zig build -Dvr -Dtarget=x86_64-windows-gnu` panics without `OPENXR_SDK_PATH`/`VULKAN_SDK` (by design); with dummy paths set it reported no C compile errors and failed only at link on the missing `openxr_loader`/`vulkan-1` libs. No Windows binary was produced or run.
+- The two Task 7 deferred items (eye MVP override left set if swapchain acquire/wait fails; runtime-initiated STOPPING never reaching `vr_shutdown()`) were not tripped by the run.
+

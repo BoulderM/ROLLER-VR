@@ -74,6 +74,7 @@ SDL_GPUDevice *ROLLERGetGPUDevice(void);
 SDL_Window *ROLLERGetWindow(void);
 
 extern int g_bVRMode;
+extern int g_iVRMaxFrames;
 extern char g_szVRTrackPath[260];
 
 // Debug overlay accessor

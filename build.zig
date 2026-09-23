@@ -87,78 +87,91 @@ pub fn build(b: *std.Build) void {
             .cwd_relative = b.pathJoin(&.{ sysroot, "include" }),
         });
     }
+    // Shared C source list for the game proper: used by both the main `roller`
+    // executable and the `-Dvr` roller-vr executable so they can never drift.
+    const game_c_sources: []const []const u8 = &.{
+        "PROJECTS/ROLLER/3d.c",
+        "PROJECTS/ROLLER/building.c",
+        "PROJECTS/ROLLER/car.c",
+        "PROJECTS/ROLLER/carplans.c",
+        "PROJECTS/ROLLER/cdx.c",
+        "PROJECTS/ROLLER/colision.c",
+        "PROJECTS/ROLLER/comms.c",
+        "PROJECTS/ROLLER/control.c",
+        "PROJECTS/ROLLER/date.c",
+        "PROJECTS/ROLLER/drawtrk3.c",
+        "PROJECTS/ROLLER/editor_camera.c",
+        "PROJECTS/ROLLER/editor_api.c",
+        "PROJECTS/ROLLER/editor_legacy_scene.c",
+        "PROJECTS/ROLLER/editor_overlay.c",
+        "PROJECTS/ROLLER/editor_helpers.c",
+        "PROJECTS/ROLLER/editor_test_car.c",
+        "PROJECTS/ROLLER/editor_reference_mesh.c",
+        "PROJECTS/ROLLER/editor_surface.c",
+        "PROJECTS/ROLLER/editor_track_loader.c",
+        "PROJECTS/ROLLER/render_queue_3d.c",
+        "PROJECTS/ROLLER/engines.c",
+        "PROJECTS/ROLLER/frontend.c",
+        "PROJECTS/ROLLER/frontend_config.c",
+        "PROJECTS/ROLLER/frontend_data.c",
+        "PROJECTS/ROLLER/frontend_lobby.c",
+        "PROJECTS/ROLLER/frontend_pause.c",
+        "PROJECTS/ROLLER/frontend_screens.c",
+        "PROJECTS/ROLLER/frontend_select_car.c",
+        "PROJECTS/ROLLER/frontend_select_disk.c",
+        "PROJECTS/ROLLER/frontend_select_players.c",
+        "PROJECTS/ROLLER/frontend_select_track.c",
+        "PROJECTS/ROLLER/frontend_select_type.c",
+        "PROJECTS/ROLLER/frontend_util.c",
+        "PROJECTS/ROLLER/func2.c",
+        "PROJECTS/ROLLER/func3.c",
+        "PROJECTS/ROLLER/function.c",
+        "PROJECTS/ROLLER/graphics.c",
+        "PROJECTS/ROLLER/gpu_parity.c",
+        "PROJECTS/ROLLER/horizon.c",
+        "PROJECTS/ROLLER/loadtrak.c",
+        "PROJECTS/ROLLER/menu_render.c",
+        "PROJECTS/ROLLER/menu_render_software.c",
+        "PROJECTS/ROLLER/game_render.c",
+        "PROJECTS/ROLLER/game_render_software.c",
+        "PROJECTS/ROLLER/scene_render.c",
+        "PROJECTS/ROLLER/scene_render_software.c",
+        "PROJECTS/ROLLER/moving.c",
+        "PROJECTS/ROLLER/network.c",
+        "PROJECTS/ROLLER/plans.c",
+        "PROJECTS/ROLLER/platform_log.c",
+        "PROJECTS/ROLLER/phone_ui.c",
+        "PROJECTS/ROLLER/png_writer.c",
+        "PROJECTS/ROLLER/polyf.c",
+        "PROJECTS/ROLLER/polytex.c",
+        "PROJECTS/ROLLER/replay.c",
+        "PROJECTS/ROLLER/roller_core_error.c",
+        "PROJECTS/ROLLER/roller.c",
+        "PROJECTS/ROLLER/rollercd.c",
+        "PROJECTS/ROLLER/rollerinput.c",
+        "PROJECTS/ROLLER/rollersound.c",
+        "PROJECTS/ROLLER/snapshot.c",
+        "PROJECTS/ROLLER/snapshot_scenes.c",
+        "PROJECTS/ROLLER/sound.c",
+        "PROJECTS/ROLLER/tower.c",
+        "PROJECTS/ROLLER/touch_ui.c",
+        "PROJECTS/ROLLER/transfrm.c",
+        "PROJECTS/ROLLER/userfns.c",
+        "PROJECTS/ROLLER/view.c",
+    };
+    // Extra sources compiled only for native desktop targets (not wasm). Shared with roller-vr.
+    const desktop_c_sources: []const []const u8 = &.{
+        "PROJECTS/ROLLER/debug_overlay.c",
+        "PROJECTS/ROLLER/crashdump.c",
+        "PROJECTS/ROLLER/menu_render_gpu.c",
+        "PROJECTS/ROLLER/crt_filter.c",
+        "PROJECTS/ROLLER/game_render_hardware.c",
+        "PROJECTS/ROLLER/scene_render_gpu.c",
+        "PROJECTS/ROLLER/rollercomms.c",
+    };
     exe_mod.addCSourceFiles(.{
         .flags = c_flags,
-        .files = &.{
-            "PROJECTS/ROLLER/3d.c",
-            "PROJECTS/ROLLER/building.c",
-            "PROJECTS/ROLLER/car.c",
-            "PROJECTS/ROLLER/carplans.c",
-            "PROJECTS/ROLLER/cdx.c",
-            "PROJECTS/ROLLER/colision.c",
-            "PROJECTS/ROLLER/comms.c",
-            "PROJECTS/ROLLER/control.c",
-            "PROJECTS/ROLLER/date.c",
-            "PROJECTS/ROLLER/drawtrk3.c",
-            "PROJECTS/ROLLER/editor_camera.c",
-            "PROJECTS/ROLLER/editor_api.c",
-            "PROJECTS/ROLLER/editor_legacy_scene.c",
-            "PROJECTS/ROLLER/editor_overlay.c",
-            "PROJECTS/ROLLER/editor_helpers.c",
-            "PROJECTS/ROLLER/editor_test_car.c",
-            "PROJECTS/ROLLER/editor_reference_mesh.c",
-            "PROJECTS/ROLLER/editor_surface.c",
-            "PROJECTS/ROLLER/editor_track_loader.c",
-            "PROJECTS/ROLLER/render_queue_3d.c",
-            "PROJECTS/ROLLER/engines.c",
-            "PROJECTS/ROLLER/frontend.c",
-            "PROJECTS/ROLLER/frontend_config.c",
-            "PROJECTS/ROLLER/frontend_data.c",
-            "PROJECTS/ROLLER/frontend_lobby.c",
-            "PROJECTS/ROLLER/frontend_pause.c",
-            "PROJECTS/ROLLER/frontend_screens.c",
-            "PROJECTS/ROLLER/frontend_select_car.c",
-            "PROJECTS/ROLLER/frontend_select_disk.c",
-            "PROJECTS/ROLLER/frontend_select_players.c",
-            "PROJECTS/ROLLER/frontend_select_track.c",
-            "PROJECTS/ROLLER/frontend_select_type.c",
-            "PROJECTS/ROLLER/frontend_util.c",
-            "PROJECTS/ROLLER/func2.c",
-            "PROJECTS/ROLLER/func3.c",
-            "PROJECTS/ROLLER/function.c",
-            "PROJECTS/ROLLER/graphics.c",
-            "PROJECTS/ROLLER/gpu_parity.c",
-            "PROJECTS/ROLLER/horizon.c",
-            "PROJECTS/ROLLER/loadtrak.c",
-            "PROJECTS/ROLLER/menu_render.c",
-            "PROJECTS/ROLLER/menu_render_software.c",
-            "PROJECTS/ROLLER/game_render.c",
-            "PROJECTS/ROLLER/game_render_software.c",
-            "PROJECTS/ROLLER/scene_render.c",
-            "PROJECTS/ROLLER/scene_render_software.c",
-            "PROJECTS/ROLLER/moving.c",
-            "PROJECTS/ROLLER/network.c",
-            "PROJECTS/ROLLER/plans.c",
-            "PROJECTS/ROLLER/platform_log.c",
-            "PROJECTS/ROLLER/phone_ui.c",
-            "PROJECTS/ROLLER/png_writer.c",
-            "PROJECTS/ROLLER/polyf.c",
-            "PROJECTS/ROLLER/polytex.c",
-            "PROJECTS/ROLLER/replay.c",
-            "PROJECTS/ROLLER/roller_core_error.c",
-            "PROJECTS/ROLLER/roller.c",
-            "PROJECTS/ROLLER/rollercd.c",
-            "PROJECTS/ROLLER/rollerinput.c",
-            "PROJECTS/ROLLER/rollersound.c",
-            "PROJECTS/ROLLER/snapshot.c",
-            "PROJECTS/ROLLER/snapshot_scenes.c",
-            "PROJECTS/ROLLER/sound.c",
-            "PROJECTS/ROLLER/tower.c",
-            "PROJECTS/ROLLER/touch_ui.c",
-            "PROJECTS/ROLLER/transfrm.c",
-            "PROJECTS/ROLLER/userfns.c",
-            "PROJECTS/ROLLER/view.c",
-        },
+        .files = game_c_sources,
     });
     if (bWasm) {
         exe_mod.addCSourceFiles(.{
@@ -177,15 +190,7 @@ pub fn build(b: *std.Build) void {
     } else {
         exe_mod.addCSourceFiles(.{
             .flags = c_flags,
-            .files = &.{
-                "PROJECTS/ROLLER/debug_overlay.c",
-                "PROJECTS/ROLLER/crashdump.c",
-                "PROJECTS/ROLLER/menu_render_gpu.c",
-                "PROJECTS/ROLLER/crt_filter.c",
-                "PROJECTS/ROLLER/game_render_hardware.c",
-                "PROJECTS/ROLLER/scene_render_gpu.c",
-                "PROJECTS/ROLLER/rollercomms.c",
-            },
+            .files = desktop_c_sources,
         });
     }
 
@@ -250,65 +255,45 @@ pub fn build(b: *std.Build) void {
         exe.linkSystemLibrary("android");
         exe.linkSystemLibrary("GLESv2");
         exe.linkSystemLibrary("EGL");
-    } else switch (target.result.os.tag) {
-        .windows => {
-            exe_mod.addCMacro("WILDMIDI_STATIC", "1");
-
-            exe.addWin32ResourceFile(.{
-                .file = b.path("ROLLER.rc"),
-            });
-            exe.subsystem = .Windows;
-            exe.linkSystemLibrary("dbghelp");
-            exe.linkSystemLibrary("user32");
-            exe.linkSystemLibrary("ws2_32");
-            exe.linkSystemLibrary("iphlpapi");
-            exe.linkSystemLibrary("winmm");
-
-            // rtmidi: OS MIDI output (WinMM backend); needs libc++ for RtMidi.cpp
-            exe_mod.link_libcpp = true;
-            exe_mod.addIncludePath(b.path("external/rtmidi"));
-            exe_mod.addCSourceFiles(.{
-                .root = b.path("external/rtmidi"),
-                .files = &.{ "RtMidi.cpp", "rtmidi_c.cpp" },
-                .flags = &.{"-D__WINDOWS_MM__"},
-            });
-            exe_mod.addCSourceFiles(.{
-                .flags = c_flags,
-                .files = &.{"PROJECTS/ROLLER/midi_player.c"},
-            });
-        },
-        else => {
-            exe_mod.addCMacro("__int16", "int16");
-            exe_mod.addCMacro("_O_RDONLY", "O_RDONLY");
-            exe_mod.addCMacro("_O_BINARY", "0x200");
-        },
+    } else {
+        configureDesktopPlatform(b, exe, exe_mod, target, c_flags);
     }
 
     b.installArtifact(exe);
 
     if (build_vr) {
-        const sdl = b.dependency("sdl", .{
-            .target = target,
-            .optimize = optimize,
-            .sanitize_c = .off,
-            .lto = .none,
-        });
+        // roller-vr: the real game (same C sources as `roller` above) plus
+        // vr_runtime.c, built with ROLLER_VR_BUILD=1. Everything exe_mod gets --
+        // WildMIDI, libcdio, libadlmidi, SDL_image, SDL3, per-OS setup -- comes
+        // from the same shared helpers, so the two executables can't drift.
+        // (roller-core.srclist is deliberately NOT used: it excludes the game.)
         const vr_exe_mod = b.createModule(.{
             .target = target,
             .optimize = optimize,
             .link_libc = true,
         });
-        vr_exe_mod.addIncludePath(sdl.builder.path("include"));
+        vr_exe_mod.sanitize_c = if (optimize == .Debug) .full else .off;
+        vr_exe_mod.addIncludePath(b.path("external/Nuklear-4.13.2"));
+        vr_exe_mod.addCMacro("ROLLER_VR_BUILD", "1");
         vr_exe_mod.addCSourceFiles(.{
             .flags = c_flags,
-            .files = &.{"PROJECTS/ROLLER/vr_skeleton_main.c"},
+            .files = game_c_sources,
+        });
+        vr_exe_mod.addCSourceFiles(.{
+            .flags = c_flags,
+            .files = desktop_c_sources,
+        });
+        vr_exe_mod.addCSourceFiles(.{
+            .flags = c_flags,
+            .files = &.{"PROJECTS/ROLLER/vr_runtime.c"},
         });
 
         const vr_exe = b.addExecutable(.{
-            .name = "vr_skeleton",
+            .name = "roller-vr",
             .root_module = vr_exe_mod,
         });
-        vr_exe.linkLibrary(sdl.artifact("SDL3"));
+        configureDesktopPlatform(b, vr_exe, vr_exe_mod, target, c_flags);
+        configureDependencies(b, vr_exe, target, optimize, false, false, null, "", "", false);
         switch (target.result.os.tag) {
             .windows => {
                 // OpenXR SDK loader .lib is expected at OPENXR_SDK_PATH\lib\openxr_loader.lib
@@ -319,7 +304,7 @@ pub fn build(b: *std.Build) void {
                 vr_exe_mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ openxr_sdk_path, "include" }) });
                 vr_exe_mod.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ openxr_sdk_path, "lib" }) });
                 vr_exe.linkSystemLibrary("openxr_loader");
-                // vr_skeleton_main.c issues raw vkCmd*/vkQueue* calls directly (it binds
+                // roller-vr (vr_runtime.c) issues raw vkCmd*/vkQueue* calls directly (it binds
                 // OpenXR to the Vulkan device SDL_GPU already created), so it needs the
                 // Vulkan loader import lib in addition to openxr_loader. Provided by the
                 // Vulkan SDK at %VULKAN_SDK%\Lib\vulkan-1.lib on Windows.
@@ -332,7 +317,7 @@ pub fn build(b: *std.Build) void {
                 // Linux: system package (confirmed present on the fatal-gpu test host as
                 // libopenxr-dev / libopenxr-loader1, headers at /usr/include/openxr/).
                 vr_exe.linkSystemLibrary("openxr_loader");
-                // vr_skeleton_main.c issues raw vkCmd*/vkQueue* calls directly against the
+                // roller-vr (vr_runtime.c) issues raw vkCmd*/vkQueue* calls directly against the
                 // Vulkan device SDL_GPU created (OpenXR only binds to it, it doesn't own
                 // it), so the Vulkan loader itself must be linked too, not just openxr_loader.
                 // System package: libvulkan-dev (headers at /usr/include/vulkan/, provides
@@ -352,7 +337,7 @@ pub fn build(b: *std.Build) void {
         exe.step.dependOn(&scene_render_seam_check.step);
     }
 
-    configureDependencies(b, exe, target, optimize, bAndroid, bWasm, android_libc_file, sdl_android_include, sdl_android_lib);
+    configureDependencies(b, exe, target, optimize, bAndroid, bWasm, android_libc_file, sdl_android_include, sdl_android_lib, true);
 
     if (!bWasm)
         configureWebBuild(b, optimize);
@@ -1563,6 +1548,52 @@ fn configureE1S4DocumentAssetTests(
     e1_s4_test.dependOn(&run_test.step);
 }
 
+/// Per-OS setup for native desktop executables (Windows / Linux / macOS):
+/// Win32 libs/resource + rtmidi, or the POSIX compat macros. Shared by the main
+/// `roller` executable and the `-Dvr` `roller-vr` executable so the two stay in
+/// lock-step.
+fn configureDesktopPlatform(
+    b: *Build,
+    exe: *Compile,
+    exe_mod: *Module,
+    target: ResolvedTarget,
+    c_flags: []const []const u8,
+) void {
+    switch (target.result.os.tag) {
+        .windows => {
+            exe_mod.addCMacro("WILDMIDI_STATIC", "1");
+
+            exe.addWin32ResourceFile(.{
+                .file = b.path("ROLLER.rc"),
+            });
+            exe.subsystem = .Windows;
+            exe.linkSystemLibrary("dbghelp");
+            exe.linkSystemLibrary("user32");
+            exe.linkSystemLibrary("ws2_32");
+            exe.linkSystemLibrary("iphlpapi");
+            exe.linkSystemLibrary("winmm");
+
+            // rtmidi: OS MIDI output (WinMM backend); needs libc++ for RtMidi.cpp
+            exe_mod.link_libcpp = true;
+            exe_mod.addIncludePath(b.path("external/rtmidi"));
+            exe_mod.addCSourceFiles(.{
+                .root = b.path("external/rtmidi"),
+                .files = &.{ "RtMidi.cpp", "rtmidi_c.cpp" },
+                .flags = &.{"-D__WINDOWS_MM__"},
+            });
+            exe_mod.addCSourceFiles(.{
+                .flags = c_flags,
+                .files = &.{"PROJECTS/ROLLER/midi_player.c"},
+            });
+        },
+        else => {
+            exe_mod.addCMacro("__int16", "int16");
+            exe_mod.addCMacro("_O_RDONLY", "O_RDONLY");
+            exe_mod.addCMacro("_O_BINARY", "0x200");
+        },
+    }
+}
+
 fn configureDependencies(
     b: *Build,
     exe: *Compile,
@@ -1573,6 +1604,7 @@ fn configureDependencies(
     android_libc_file: ?LazyPath,
     sdl_android_include: []const u8,
     sdl_android_lib: []const u8,
+    register_compile_flags_step: bool,
 ) void {
     const exe_mod = exe.root_module;
 
@@ -1666,8 +1698,10 @@ fn configureDependencies(
 
     cflags.addIncludePath(b.path("external/Nuklear-4.13.2"));
 
-    const cflags_step = b.step("compile-flags", "Generate compile flags");
-    cflags_step.dependOn(&cflags.step);
+    if (register_compile_flags_step) {
+        const cflags_step = b.step("compile-flags", "Generate compile flags");
+        cflags_step.dependOn(&cflags.step);
+    }
 }
 
 fn configureWebBuild(b: *Build, optimize: OptimizeMode) void {

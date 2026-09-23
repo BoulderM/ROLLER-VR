@@ -27,6 +27,7 @@
 #include "3d.h"
 #include "roller.h"  /* ROLLERGetGPUDevice() -- see vr_init() below */
 #include "view.h"    /* calculateview() -- see vr_present_stereo_frame() below */
+#include "frontend.h"  /* quit_game, racing -- --vr-frames bounded-run exit */
 
 static SDL_GPUDevice *s_gpu;
 static VkInstance s_vk_instance;
@@ -266,7 +267,7 @@ bool vr_init(void)
     for (Uint32 i = 0; i < s_view_count; i++) {
         XrSwapchainCreateInfo swapchain_create_info = {
             .type = XR_TYPE_SWAPCHAIN_CREATE_INFO,
-            .usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT,
+            .usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT,
             .format = (int64_t)swapchain_format,
             .sampleCount = 1,
             .width = s_view_configs[i].recommendedImageRectWidth,
@@ -328,8 +329,15 @@ bool vr_init(void)
     return true;
 }
 
+/* Number of ticks that actually rendered and submitted a stereo layer, for
+ * the --vr-frames N bounded-run option (g_iVRMaxFrames) and progress logging. */
+static int s_vr_frames_presented = 0;
+static int s_vr_empty_frames = 0;   /* ticks submitted with layerCount = 0 */
+
 void vr_shutdown(void)
 {
+    fprintf(stderr, "vr_runtime: shutdown (frames with layer=%d, empty frames=%d)\n",
+            s_vr_frames_presented, s_vr_empty_frames);
     /* s_gpu is the game's own shared GPU device (see vr_init()'s comment
      * above), not one this runtime owns -- its lifecycle belongs entirely
      * to InitSDL()/ShutdownSDL() (roller.c). vr_shutdown() must wait for it
@@ -867,6 +875,34 @@ bool vr_run_frame(void)
     s_frame_open = false;
     if (XR_FAILED(end_result)) return false;
 
+    if (s_frame_view_count_for_layer > 0) {
+        s_vr_frames_presented++;
+        if (s_vr_frames_presented == 1 || s_vr_frames_presented % 60 == 0)
+            fprintf(stderr, "vr_runtime: frame %d submitted (views=%u layerCount=1) "
+                            "view[0] pos=(%.3f,%.3f,%.3f) ori=(%.3f,%.3f,%.3f,%.3f)\n",
+                    s_vr_frames_presented, (unsigned)s_frame_view_count_for_layer,
+                    s_frame_views[0].pose.position.x, s_frame_views[0].pose.position.y,
+                    s_frame_views[0].pose.position.z,
+                    s_frame_views[0].pose.orientation.x, s_frame_views[0].pose.orientation.y,
+                    s_frame_views[0].pose.orientation.z, s_frame_views[0].pose.orientation.w);
+        /* --vr-frames N: after N frames actually reached the compositor, ask
+         * the game to quit through its own shutdown path (same flags the
+         * headless snapshot mode uses), so frontend_shutdown_finish() ->
+         * vr_shutdown() runs exactly as for a user-initiated quit. */
+        if (g_iVRMaxFrames > 0 && s_vr_frames_presented >= g_iVRMaxFrames && !quit_game) {
+            fprintf(stderr, "vr_runtime: --vr-frames %d reached, requesting quit\n", g_iVRMaxFrames);
+            quit_game = 1;
+            racing = 0;
+        }
+    } else {
+        s_vr_empty_frames++;
+        if (s_vr_empty_frames <= 10)
+            fprintf(stderr, "vr_runtime: tick submitted with layerCount=0 (empty #%d, after %d presented frames, "
+                            "shouldRender=%d, frontend state=%d, racing=%d)\n",
+                    s_vr_empty_frames, s_vr_frames_presented, (int)s_frame_state.shouldRender,
+                    (int)eFrontendCurrentState, (int)racing);
+    }
+
     return keep_running;
 }
 
@@ -1162,6 +1198,15 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
         dst_to_transfer_dst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         dst_to_transfer_dst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         dst_to_transfer_dst.image = target_image;
+        /* Access masks (added after the first hardware run under
+         * VK_LAYER_KHRONOS_validation's synchronization validation, which
+         * reported READ_AFTER_WRITE / WRITE_AFTER_WRITE hazards for the
+         * original all-zero masks): a layout transition counts as a write, so
+         * the copy's TRANSFER_READ (source) / TRANSFER_WRITE (destination)
+         * must be in the pre-barrier's dstAccessMask, and the post-copy
+         * transitions must have the copy's accesses as srcAccessMask. */
+        src_to_transfer_src.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        dst_to_transfer_dst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         VkImageMemoryBarrier pre_barriers[2] = { src_to_transfer_src, dst_to_transfer_dst };
         /* TOP_OF_PIPE_BIT as srcStage (no explicit access masks) mirrors Phase 1's
          * own already-hardware-tested barrier pattern: real synchronization here is
@@ -1188,9 +1233,13 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
         VkImageMemoryBarrier src_back_to_sampler = src_to_transfer_src;
         src_back_to_sampler.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         src_back_to_sampler.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        src_back_to_sampler.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        src_back_to_sampler.dstAccessMask = 0;
         VkImageMemoryBarrier dst_to_general = dst_to_transfer_dst;
         dst_to_general.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         dst_to_general.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        dst_to_general.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        dst_to_general.dstAccessMask = 0;
         VkImageMemoryBarrier post_barriers[2] = { src_back_to_sampler, dst_to_general };
         /* BOTTOM_OF_PIPE_BIT as dstStage (no explicit access masks), same
          * externally-synchronized reasoning as the pre-copy barrier above: the
