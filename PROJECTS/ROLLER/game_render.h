@@ -67,6 +67,9 @@ void game_render_set_crt_filter(GameRenderer *renderer, CRTFilter *filter);
 // Frame lifecycle
 void game_render_begin_frame(GameRenderer *renderer);
 void game_render_end_frame(GameRenderer *renderer);
+void game_render_set_vr_eye_mvp(GameRenderer *renderer, const float mvp[16]);
+SDL_GPUTexture *game_render_end_frame_to_vr_eye(GameRenderer *renderer, Uint32 uiWidth, Uint32 uiHeight);
+SDL_GPUFence *game_render_get_last_vr_fence(GameRenderer *renderer);
 /* Editor-only synchronous software completion. Converts the native indexed
  * frame directly to top-left RGBA8 and scales with opaque-black letterboxing;
  * it never calls UpdateSDLWindow or simulates a GPU download. */

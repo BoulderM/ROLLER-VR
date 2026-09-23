@@ -270,6 +270,21 @@ void game_render_end_frame(GameRenderer *renderer) {
 #endif
 }
 
+void game_render_set_vr_eye_mvp(GameRenderer *renderer, const float mvp[16]) {
+    if (!renderer || !renderer->gpu) return;
+    scene_render_gpu_set_vr_eye_mvp(renderer->gpu, mvp);
+}
+
+SDL_GPUTexture *game_render_end_frame_to_vr_eye(GameRenderer *renderer, Uint32 uiWidth, Uint32 uiHeight) {
+    if (!renderer || !renderer->gpu) return NULL;
+    return scene_render_gpu_end_frame_to_vr_eye(renderer->gpu, uiWidth, uiHeight);
+}
+
+SDL_GPUFence *game_render_get_last_vr_fence(GameRenderer *renderer) {
+    if (!renderer || !renderer->gpu) return NULL;
+    return scene_render_gpu_get_last_fence(renderer->gpu);
+}
+
 bool game_render_end_frame_software_readback(
     GameRenderer *renderer,
     const uint8 *pbyIndexedPixels,
