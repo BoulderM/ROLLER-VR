@@ -220,10 +220,20 @@ void game_render_set_target(GameRenderer *renderer, uint8 *buffer,
 // Camera
 void game_render_set_camera(GameRenderer *renderer,
                             const GameRenderCamera *camera);
+/* VR read-back counterpart to game_render_set_camera -- mirrors its struct-
+ * copy shape in the opposite direction (GPU backend only; a no-op leaving
+ * *camera untouched in SW mode or if the GPU backend is unavailable). Used
+ * by vr_present_stereo_frame (vr_runtime.c) to read back the camera
+ * draw_road() just set via game_render_set_camera, before composing that
+ * eye's head-tracked MVP override on top of it. */
+void game_render_get_camera(GameRenderer *renderer, GameRenderCamera *camera);
 
 // Projection
 void game_render_set_projection(GameRenderer *renderer,
                                 const GameRenderProjection *proj);
+/* VR read-back counterpart to game_render_set_projection -- see
+ * game_render_get_camera's comment above. */
+void game_render_get_projection(GameRenderer *renderer, GameRenderProjection *proj);
 
 // Unified texture loading
 // tex_idx: use TEXTURE_BANK_* constants.

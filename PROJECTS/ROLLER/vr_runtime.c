@@ -21,6 +21,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* draw_road()/main_loop_iteration()/g_pGameRenderer declarations (3d.h
+ * already pulls in game_render.h for the game_render_* wrapper calls used
+ * below). */
+#include "3d.h"
+
 static SDL_GPUDevice *s_gpu;
 static VkInstance s_vk_instance;
 static VkPhysicalDevice s_vk_physical_device;
@@ -619,4 +624,343 @@ void build_mvp_vr_eye(float mvp_out[16],
     (void)vpW; (void)vpH; /* reserved for Phase 3 comfort/resolution tuning, unused here --
                              scene_render_gpu_set_projection_reference_height already
                              handles the resolution-mismatch case per the design spec */
+}
+
+/* --- Per-frame execution (Task 7: OpenXR bracketing + per-eye present) --- */
+
+/* Half of a 63mm default IPD; revisited in Phase 3 once there's a real
+ * rendered scene to calibrate comfort/IPD settings against. */
+#define VR_EYE_OFFSET_M 0.0315f
+
+static XrFrameState s_frame_state;
+static XrView       s_frame_views[2];
+static bool         s_should_render_this_tick = false;
+
+/* Filled in by vr_present_stereo_frame() (one entry per eye actually
+ * rendered this tick) and consumed by vr_run_frame() when it builds this
+ * tick's xrEndFrame composition layer. s_frame_view_count_for_layer is
+ * reset to 0 at the top of every vr_run_frame() call, before
+ * main_loop_iteration() runs, so a tick where updatescreen()'s VR branch
+ * never executes (e.g. still on a non-racing frontend state) correctly
+ * submits layerCount = 0 rather than stale data from a previous tick. */
+static Uint32 s_frame_view_count_for_layer = 0;
+static XrCompositionLayerProjectionView s_projection_views[2];
+
+static Uint32 view_configs_width(Uint32 i)
+{
+    return s_view_configs[i].recommendedImageRectWidth;
+}
+
+static Uint32 view_configs_height(Uint32 i)
+{
+    return s_view_configs[i].recommendedImageRectHeight;
+}
+
+bool vr_run_frame(void)
+{
+    XrEventDataBuffer event = { .type = XR_TYPE_EVENT_DATA_BUFFER };
+    bool should_quit = false;
+    while (xrPollEvent(s_instance, &event) == XR_SUCCESS) {
+        if (event.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
+            XrEventDataSessionStateChanged *state_event = (XrEventDataSessionStateChanged *)&event;
+            if (state_event->state == XR_SESSION_STATE_READY && !s_session_running) {
+                XrSessionBeginInfo begin_info = {
+                    .type = XR_TYPE_SESSION_BEGIN_INFO,
+                    .primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
+                };
+                if (XR_FAILED(xrBeginSession(s_session, &begin_info))) return false;
+                s_session_running = true;
+            } else if (state_event->state == XR_SESSION_STATE_STOPPING ||
+                       state_event->state == XR_SESSION_STATE_EXITING ||
+                       state_event->state == XR_SESSION_STATE_LOSS_PENDING) {
+                should_quit = true;
+            }
+        }
+        event.type = XR_TYPE_EVENT_DATA_BUFFER;
+    }
+    if (should_quit) return false;
+
+    if (!s_session_running) {
+        SDL_Delay(10);
+        return true; /* keep looping, waiting for READY */
+    }
+
+    XrFrameWaitInfo frame_wait_info = { .type = XR_TYPE_FRAME_WAIT_INFO };
+    s_frame_state = (XrFrameState){ .type = XR_TYPE_FRAME_STATE };
+    if (XR_FAILED(xrWaitFrame(s_session, &frame_wait_info, &s_frame_state))) return false;
+
+    XrFrameBeginInfo frame_begin_info = { .type = XR_TYPE_FRAME_BEGIN_INFO };
+    if (XR_FAILED(xrBeginFrame(s_session, &frame_begin_info))) return false;
+
+    s_should_render_this_tick = s_frame_state.shouldRender;
+    if (s_should_render_this_tick) {
+        if (!vr_locate_views(s_frame_state.predictedDisplayTime, s_frame_views)) {
+            s_should_render_this_tick = false; /* no pose at all yet (first frame edge case) --
+                                                   skip this tick's render, still end the frame below */
+        }
+    }
+
+    /* Reset before main_loop_iteration() runs -- see the struct comment on
+     * s_frame_view_count_for_layer above for why this must happen every
+     * tick regardless of whether updatescreen()'s VR branch runs. */
+    s_frame_view_count_for_layer = 0;
+
+    /* main_loop_iteration() runs the real game tick (input, physics,
+     * frontend state machine). When it reaches race_draw()->updatescreen(),
+     * updatescreen()'s g_bVRMode branch (a later task) calls
+     * vr_present_stereo_frame() synchronously, right here in the middle of
+     * this function call -- s_frame_views/s_should_render_this_tick above
+     * are what it reads, and it fills s_projection_views/
+     * s_frame_view_count_for_layer for the xrEndFrame call below. */
+    bool keep_running = main_loop_iteration() != 0;
+
+    XrCompositionLayerProjection projection_layer = {
+        .type = XR_TYPE_COMPOSITION_LAYER_PROJECTION,
+        .space = s_local_space,
+        .viewCount = s_frame_view_count_for_layer,   /* 0 if updatescreen()'s VR branch never ran this tick */
+        .views = s_projection_views,
+    };
+    const XrCompositionLayerBaseHeader *submitted_layers[1] = {
+        (const XrCompositionLayerBaseHeader *)&projection_layer,
+    };
+    XrFrameEndInfo frame_end_info = {
+        .type = XR_TYPE_FRAME_END_INFO,
+        .displayTime = s_frame_state.predictedDisplayTime,
+        .environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE,
+        .layerCount = s_frame_view_count_for_layer > 0 ? 1u : 0u,
+        .layers = s_frame_view_count_for_layer > 0 ? submitted_layers : NULL,
+    };
+    if (XR_FAILED(xrEndFrame(s_session, &frame_end_info))) return false;
+
+    return keep_running;
+}
+
+void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iDriveView)
+{
+    if (!s_should_render_this_tick) {
+        s_frame_view_count_for_layer = 0;
+        return;
+    }
+
+    for (Uint32 i = 0; i < s_view_count && i < 2; i++) {
+        /* Required before every eye EXCEPT the first: scene_render_gpu_end_
+         * frame_internal()'s very first line is `if (!r || !r->cmdBuf) return
+         * false;`, and r->cmdBuf is set back to NULL by the previous eye's own
+         * end_frame_to_vr_eye() call right after it submits (scene_render_gpu.c's
+         * end_frame_internal, near its end). The ONLY place that re-acquires it
+         * (SDL_AcquireGPUCommandBuffer) is scene_render_gpu_begin_frame(), which
+         * also resets vertexCount/drawCmdCount/carDrawCount/etc back to 0.
+         * Without calling it again here for the second eye, its draw_road()
+         * calls would silently append onto whatever the first eye already
+         * queued and submitted (instead of starting from a clean, empty draw
+         * list), AND its end_frame_to_vr_eye() call would hard-fail immediately
+         * on the NULL-cmdBuf check above -- i.e. the second eye would never
+         * render at all, every single frame.
+         *
+         * i == 0 deliberately does NOT call this: per this function's own
+         * documented calling contract (see vr_runtime.h), the caller
+         * (updatescreen()'s g_bVRMode branch) is expected to have already
+         * called game_render_begin_frame() once for this tick before reaching
+         * this function -- exactly the same single call the non-VR path
+         * already makes before its own single draw_road()+end_frame() pair.
+         * Calling it again here for eye 0 too would silently discard that
+         * already-acquired (but not yet submitted) command buffer by
+         * unconditionally re-acquiring a new one over it. */
+        if (i > 0)
+            game_render_begin_frame(g_pGameRenderer);
+
+        /* draw_road() recomputes calculateview()/calculatetransform() fresh
+         * each call and queues this eye's draw list into g_pGameRenderer's
+         * single windowless scene instance -- there are two draw_road()
+         * calls here (one per eye), not two renderer instances. */
+        draw_road(pMainScrPtr, uiViewType, iDriveView, -1, 0);
+
+        SceneRenderCamera base_cam = {0};
+        SceneRenderProjection base_proj = {0};
+        game_render_get_camera(g_pGameRenderer, &base_cam);       /* read back what draw_road() just set */
+        game_render_get_projection(g_pGameRenderer, &base_proj);
+
+        float eye_mvp[16];
+        float eye_sign = (i == 0) ? -1.0f : 1.0f;
+        build_mvp_vr_eye(eye_mvp, &base_cam, &base_proj, &s_frame_views[i],
+                          eye_sign * VR_EYE_OFFSET_M, (int)view_configs_width(i), (int)view_configs_height(i));
+        game_render_set_vr_eye_mvp(g_pGameRenderer, eye_mvp);
+
+        Uint32 image_index = 0;
+        XrSwapchainImageAcquireInfo acquire_info = { .type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+        if (XR_FAILED(xrAcquireSwapchainImage(s_swapchains[i], &acquire_info, &image_index))) return;
+        XrSwapchainImageWaitInfo wait_info = { .type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO, .timeout = XR_INFINITE_DURATION };
+        if (XR_FAILED(xrWaitSwapchainImage(s_swapchains[i], &wait_info))) return;
+
+        Uint32 xr_image_count = 0;
+        xrEnumerateSwapchainImages(s_swapchains[i], 0, &xr_image_count, NULL);
+        XrSwapchainImageVulkan2KHR *xr_images = calloc(xr_image_count, sizeof(XrSwapchainImageVulkan2KHR));
+        for (Uint32 k = 0; k < xr_image_count; k++) xr_images[k].type = XR_TYPE_SWAPCHAIN_IMAGE_VULKAN2_KHR;
+        xrEnumerateSwapchainImages(s_swapchains[i], xr_image_count, &xr_image_count,
+                                    (XrSwapchainImageBaseHeader *)xr_images);
+        VkImage target_image = xr_images[image_index].image;
+        free(xr_images);
+
+        Uint32 eye_w = view_configs_width(i), eye_h = view_configs_height(i);
+        SDL_GPUTexture *resolved = game_render_end_frame_to_vr_eye(g_pGameRenderer, eye_w, eye_h);
+        /* Fetched unconditionally, regardless of whether `resolved` came back
+         * NULL -- scene_render_gpu's lastVrFence handoff is one-shot and
+         * leaks (never SDL_ReleaseGPUFence'd) if the getter isn't called
+         * every single time a render happens, even on a failure path (see
+         * scene_render_gpu_get_last_fence's doc comment). In the current
+         * implementation resolved/fence always rise and fall together (both
+         * NULL or both set -- scene_render_gpu_end_frame_internal only hands
+         * back a fence when submission itself succeeded, which is also what
+         * makes the offscreen texture valid), but consuming+releasing the
+         * fence here unconditionally, before any early return, costs nothing
+         * and closes off that leak path even if that invariant ever changes. */
+        SDL_GPUFence *fence = game_render_get_last_vr_fence(g_pGameRenderer);
+        if (fence) {
+            /* Fence-wait serialization (Approach A from the design spec) --
+             * simple and correct; semaphore-based overlap is explicitly
+             * deferred to Phase 3 per the spec. */
+            SDL_WaitForGPUFences(s_gpu, true, &fence, 1);
+            SDL_ReleaseGPUFence(s_gpu, fence);
+        }
+        if (!resolved) return;
+
+        SDL_PropertiesID tex_props = SDL_GetGPUTextureProperties(resolved);
+        VkImage resolved_vk_image = (VkImage)SDL_GetPointerProperty(
+            tex_props, SDL_PROP_GPU_TEXTURE_VULKAN_IMAGE_POINTER, NULL);
+        if (!resolved_vk_image) {
+            fprintf(stderr, "vr_runtime: SDL_GetGPUTextureProperties did not expose a VkImage "
+                             "for the resolved eye texture (is this the patched SDL fork?)\n");
+            return;
+        }
+
+        vkResetCommandBuffer(s_command_buffer, 0);
+        VkCommandBufferBeginInfo cb_begin_info = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        };
+        vkBeginCommandBuffer(s_command_buffer, &cb_begin_info);
+
+        VkImageSubresourceRange subresource_range = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1,
+        };
+        /* Pre-copy layout of the resolved eye texture: NOT VK_IMAGE_LAYOUT_GENERAL
+         * (the plan's original, unverified assumption) -- checked directly against
+         * the patched SDL fork's Vulkan backend (/root/sdl-vr-fork/src/gpu/vulkan/
+         * SDL_gpu_vulkan.c) rather than left as a guess:
+         *
+         *   - ensure_offscreen_texture() (scene_render_gpu.c) creates offscreenTex
+         *     with usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER.
+         *   - SDL_gpu_vulkan.c's VULKAN_INTERNAL_DefaultTextureUsageMode() checks
+         *     the SAMPLER bit FIRST (comment: "NOTE: order matters here!"), so this
+         *     texture's "default" usage mode is VULKAN_TEXTURE_USAGE_MODE_SAMPLER,
+         *     whose layout (VULKAN_INTERNAL_TextureSubresourceMemoryBarrier's
+         *     destinationUsageMode switch) is VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL.
+         *   - VULKAN_EndRenderPass() unconditionally transitions every color/resolve
+         *     attachment subresource back to its texture's default usage mode when
+         *     the render pass ends (comment in SDL_gpu_vulkan.c: "When binding a
+         *     texture as a render pass attachment, we transition the resource on
+         *     BeginRenderPass and transition it back to its default on EndRenderPass").
+         *   - scene_render_gpu.c's end_frame_internal() uses offscreenTex as the
+         *     resolve/color target for BOTH Pass 1 (3D scene) and Pass 2 (HUD
+         *     overlay, colorInfo.texture = resolveTarget again) -- each SDL_EndGPU-
+         *     RenderPass call re-applies the same back-to-default transition, and
+         *     neither pass sets colorInfo.cycle (so this is also the confirmation
+         *     Task 1's cycle:false requirement needs -- offscreenTex is genuinely
+         *     never cycled, only resized via a full SDL_CreateGPUTexture when w/h
+         *     changes between eyes, which is fine since we re-query the VkImage
+         *     pointer fresh every eye anyway).
+         *   - For the windowless VR path (bReadback=false, r->window=NULL), no
+         *     further pass touches offscreenTex after Pass 2, so by the time our
+         *     fence (submitted at the very end of end_frame_internal) signals, the
+         *     texture's real hardware layout is exactly VK_IMAGE_LAYOUT_SHADER_
+         *     READ_ONLY_OPTIMAL -- confirmed against the driver code actually
+         *     doing the transition, not inferred from usage-flag conventions alone.
+         *
+         * Consequence for the barrier below: oldLayout must be SHADER_READ_ONLY_
+         * OPTIMAL, not GENERAL or UNDEFINED, or this barrier itself is invalid
+         * (wrong oldLayout = image content undefined per the Vulkan spec, and a
+         * hard validation error under XR_APILAYER_LUNARG_core_validation).
+         *
+         * Equally important and NOT present in the plan's original code: this
+         * function must transition the image back to VK_IMAGE_LAYOUT_SHADER_
+         * READ_ONLY_OPTIMAL after the copy (see src_back_to_sampler below), because
+         * SDL_GPU's own barrier logic (VULKAN_INTERNAL_PrepareTextureSubresourceFor
+         * Write, comment: "always do barrier because of layout transitions") does
+         * NOT track the texture's real current layout across frames -- it always
+         * computes next frame's Pass-1 barrier assuming the texture is still sitting
+         * in its default (SAMPLER) layout. Leaving it in TRANSFER_SRC_OPTIMAL after
+         * our copy would silently desync SDL_GPU's internal bookkeeping from the
+         * texture's real Vulkan state and corrupt the very next frame's render pass
+         * for this same eye. */
+        VkImageMemoryBarrier src_to_transfer_src = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = resolved_vk_image, .subresourceRange = subresource_range,
+        };
+        VkImageMemoryBarrier dst_to_transfer_dst = src_to_transfer_src;
+        dst_to_transfer_dst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        dst_to_transfer_dst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        dst_to_transfer_dst.image = target_image;
+        VkImageMemoryBarrier pre_barriers[2] = { src_to_transfer_src, dst_to_transfer_dst };
+        /* TOP_OF_PIPE_BIT as srcStage (no explicit access masks) mirrors Phase 1's
+         * own already-hardware-tested barrier pattern: real synchronization here is
+         * provided externally by the SDL_WaitForGPUFences call above (we already
+         * know the GPU has finished writing resolved_vk_image before this command
+         * buffer is even recorded), so the barrier only needs to be spec-valid for
+         * the LAYOUT transition, not for ordering a real GPU-side dependency. */
+        vkCmdPipelineBarrier(s_command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                              VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 2, pre_barriers);
+
+        VkImageCopy copy_region = {
+            .srcSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+            .dstSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+            .extent = { eye_w, eye_h, 1 },
+        };
+        vkCmdCopyImage(s_command_buffer, resolved_vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       target_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region);
+
+        /* Post-copy: restore the resolved eye texture to the layout SDL_GPU's own
+         * bookkeeping assumes it's sitting in (see the long comment above), and
+         * bring the swapchain image to VK_IMAGE_LAYOUT_GENERAL for the OpenXR
+         * runtime -- the same target layout Phase 1's original clear-loop used and
+         * that was confirmed working end-to-end against Monado on fatal-gpu. */
+        VkImageMemoryBarrier src_back_to_sampler = src_to_transfer_src;
+        src_back_to_sampler.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        src_back_to_sampler.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkImageMemoryBarrier dst_to_general = dst_to_transfer_dst;
+        dst_to_general.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        dst_to_general.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        VkImageMemoryBarrier post_barriers[2] = { src_back_to_sampler, dst_to_general };
+        /* BOTTOM_OF_PIPE_BIT as dstStage (no explicit access masks), same
+         * externally-synchronized reasoning as the pre-copy barrier above: the
+         * next real GPU usage of either image happens in a later, independently
+         * submitted/fenced command buffer (next frame's SDL_GPU render pass for
+         * resolved_vk_image, the OpenXR runtime's own compositor for target_image),
+         * not anything ordered against this command buffer directly. */
+        vkCmdPipelineBarrier(s_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                              VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 2, post_barriers);
+        vkEndCommandBuffer(s_command_buffer);
+
+        VkSubmitInfo submit_info = {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &s_command_buffer,
+        };
+        vkQueueSubmit(s_vk_queue, 1, &submit_info, VK_NULL_HANDLE);
+        vkQueueWaitIdle(s_vk_queue); /* same fence-serialized simplicity as the copy's own producer wait above */
+
+        XrSwapchainImageReleaseInfo release_info = { .type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+        xrReleaseSwapchainImage(s_swapchains[i], &release_info);
+
+        s_projection_views[i] = (XrCompositionLayerProjectionView){
+            .type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW,
+            .pose = s_frame_views[i].pose,
+            .fov = s_frame_views[i].fov,
+            .subImage = {
+                .swapchain = s_swapchains[i],
+                .imageRect = { .extent = { (int32_t)eye_w, (int32_t)eye_h } },
+            },
+        };
+    }
+    s_frame_view_count_for_layer = s_view_count;
 }

@@ -3815,6 +3815,16 @@ void scene_render_gpu_set_projection(SceneRendererGPU *r, const SceneRenderProje
     if (r && proj) r->proj = *proj;
 }
 
+void scene_render_gpu_get_camera(const SceneRendererGPU *r, SceneRenderCamera *cam)
+{
+    if (r && cam) *cam = r->camera;
+}
+
+void scene_render_gpu_get_projection(const SceneRendererGPU *r, SceneRenderProjection *proj)
+{
+    if (r && proj) *proj = r->proj;
+}
+
 void scene_render_gpu_set_sky_color(SceneRendererGPU *r, float red, float green, float blue)
 {
     if (r) { r->skyR = red; r->skyG = green; r->skyB = blue; }

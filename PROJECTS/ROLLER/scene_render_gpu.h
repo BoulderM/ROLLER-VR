@@ -88,6 +88,16 @@ void scene_render_gpu_set_camera(SceneRendererGPU *r,
 void scene_render_gpu_set_projection(SceneRendererGPU *r,
                                      const SceneRenderProjection *proj);
 
+/* VR read-back counterparts to set_camera/set_projection above -- same
+ * struct-copy shape, opposite direction. Used by vr_present_stereo_frame
+ * (vr_runtime.c, via game_render_get_camera/get_projection) to read back
+ * whatever draw_road() just set for the current eye via the setters above,
+ * before composing that eye's head-tracked VR MVP override on top of it. */
+void scene_render_gpu_get_camera(const SceneRendererGPU *r,
+                                 SceneRenderCamera *cam);
+void scene_render_gpu_get_projection(const SceneRendererGPU *r,
+                                     SceneRenderProjection *proj);
+
 SceneTextureHandle scene_render_gpu_load_texture(SceneRendererGPU *r,
                                                  const uint8 *pixelData,
                                                  int width, int height,

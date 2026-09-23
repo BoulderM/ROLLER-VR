@@ -762,6 +762,11 @@ void game_render_set_camera(GameRenderer *renderer,
     scene_render_set_camera(renderer->scene, camera);
 }
 
+void game_render_get_camera(GameRenderer *renderer, GameRenderCamera *camera) {
+    if (!renderer || !camera || !renderer->gpu) return;
+    scene_render_gpu_get_camera(renderer->gpu, camera);
+}
+
 // Projection
 
 void game_render_set_projection(GameRenderer *renderer,
@@ -772,6 +777,11 @@ void game_render_set_projection(GameRenderer *renderer,
      * scr_size etc. regardless of render mode. */
     game_render_sw_set_projection(renderer->sw, proj);
     scene_render_set_projection(renderer->scene, proj);
+}
+
+void game_render_get_projection(GameRenderer *renderer, GameRenderProjection *proj) {
+    if (!renderer || !proj || !renderer->gpu) return;
+    scene_render_gpu_get_projection(renderer->gpu, proj);
 }
 
 // Asset loading

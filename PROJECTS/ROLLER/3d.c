@@ -31,6 +31,9 @@
 #if defined(ROLLER_EDITOR_CORE)
 #include "editor_camera.h"
 #endif
+#if defined(ROLLER_VR_BUILD)
+#include "vr_runtime.h"
+#endif
 #include <SDL3/SDL.h>
 #if defined(__EMSCRIPTEN__)
 #include <emscripten/emscripten.h>
@@ -1014,7 +1017,15 @@ static void frontend_run_game_loop(eFrontendState eInitialState)
   // simulated infinite-loop semantics, execution after this call is unreachable.
   emscripten_set_main_loop(main_loop_iteration_wrapper, 0, 1);
 #else
-  while (main_loop_iteration()) {
+#if defined(ROLLER_VR_BUILD)
+  if (g_bVRMode) {
+    while (vr_run_frame()) {
+    }
+  } else
+#endif
+  {
+    while (main_loop_iteration()) {
+    }
   }
 #endif
 }
