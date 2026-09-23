@@ -632,8 +632,10 @@ static void print_usage(FILE *f, const char *argv0)
   cli_fprintf(f, " --frames N[,M,...]     replay-frame indices to capture (--snapshot only)\n");
   cli_fprintf(f, " --out DIR              output directory for snapshot PNGs (--snapshot only)\n");
   cli_fprintf(f, " --gpu-parity BACKEND   run F-S1 parity (vulkan, direct3d12, or metal)\n");
+#if defined(ROLLER_VR_BUILD)
   cli_fprintf(f, " --vr                    boot headless into VR mode (windowless GPU device, direct race start)\n");
   cli_fprintf(f, " --vr-frames N           with --vr: quit cleanly after N stereo frames (default: run until closed)\n");
+#endif
   cli_fprintf(f, " --track-path PATH       load a track directly from an absolute path\n");
   cli_fprintf(f, " --track-asset-root DIR  resolve direct-track assets from this document root first\n");
   cli_fprintf(f, " --track-fallback-root DIR  override the direct-track FATDATA fallback root\n");
@@ -3034,6 +3036,7 @@ int main(int argc, const char **argv, const char **envp)
         cli_fprintf(stderr, "ERROR: '--gpu-parity' needs an argument\n");
         return 1;
       }
+#if defined(ROLLER_VR_BUILD)
     } else if (strcmp(argv[i], "--vr") == 0) {
       g_bVRMode = 1;
       consumed = 1;
@@ -3051,6 +3054,7 @@ int main(int argc, const char **argv, const char **envp)
         cli_fprintf(stderr, "ERROR: '--vr-frames' needs an argument\n");
         return 1;
       }
+#endif
     } else if (strcmp(argv[i], "--track-path") == 0) {
       if (i + 1 < argc) {
         g_szDirectTrackPath = argv[i + 1];
@@ -3115,6 +3119,12 @@ int main(int argc, const char **argv, const char **envp)
     i += consumed;
   }
 
+#if defined(ROLLER_VR_BUILD)
+  if (g_bVRMode && g_bSnapshotMode) {
+    cli_fprintf(stderr, "ERROR: '--vr' cannot be combined with '--snapshot' or '--snapshot-scene'\n");
+    return 1;
+  }
+#endif
   if (szGpuParityBackend) {
     if (g_bSnapshotMode || g_szDirectTrackPath || g_bVRMode) {
       cli_fprintf(stderr, "ERROR: '--gpu-parity' cannot be combined with snapshot, track-path, or vr mode\n");
