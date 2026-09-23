@@ -7,14 +7,18 @@
  *
  *   gcc -Wall -Wextra vr_mvp_math_test.c -o /tmp/vr_mvp_math_test -lm && /tmp/vr_mvp_math_test
  *
+ * (needs the OpenXR headers on the include path, e.g. /usr/include/openxr
+ * from libopenxr-dev, only for the XrView/XrPosef types used by the real
+ * vr_merge_view() from vr_view_merge.h that part (f) below tests.)
+ *
  * Exits 0 and prints "ALL PASS" if every check passes; exits 1 and prints
  * the first failing check's details otherwise (main() returns non-zero on
  * any failure).
  *
- * This is a *reimplementation* of the same matrix-composition formulas used
- * in vr_runtime.c's build_mvp_vr_eye() (quat_to_mat3, mat3_transpose,
- * mat3_mul, mat3_flip_row2, and the combined_rot/right_world/head_pos_world
- * derivation), not a call into the real function -- build_mvp_vr_eye()
+ * The build_mvp_vr_eye() part is a *reimplementation* of the same
+ * matrix-composition formulas used in vr_runtime.c (quat_to_mat3,
+ * mat3_transpose, mat3_mul, mat3_flip_row2, and the combined_rot/
+ * head_pos_world derivation), not a call into the real function -- build_mvp_vr_eye()
  * itself isn't easily unit-testable in isolation without pulling in the
  * full OpenXR/Vulkan/SDL headers it's compiled against (XrView,
  * SceneRenderCamera, SceneRenderProjection). Reimplementing the pure math
@@ -39,9 +43,21 @@
  *       turned 90deg in world) still centers the cockpit's own new forward
  *       direction -- exercises the V/R_true half of the composition, not
  *       just the S/H half that (a)-(c) mostly exercise with R_true == I.
+ *   (e) eye separation: two eyes whose poses are the runtime's (+-IPD/2
+ *       along head-local X) end up exactly IPD apart in the game's world
+ *       (times VR_METERS_TO_WORLD), along the cockpit's own right axis --
+ *       NOT IPD plus an extra offset (the design plan's original double-
+ *       counted IPD, fixed in the final review wave).
+ *   (f) vr_merge_view() (the REAL function, from vr_view_merge.h, used by
+ *       vr_locate_views()): all valid; orientation-only (3DoF); position-only;
+ *       neither valid with and without a last-good view; FOV always the
+ *       located one and non-zero.
  */
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
+
+#include "vr_view_merge.h"
 
 #define EPS 1e-3f
 
@@ -160,6 +176,104 @@ static void check_centers_at_distance(const char *label,
     }
 }
 
+/* Mirrors build_mvp_vr_eye()'s eye-position derivation: world-space eye
+ * offset from the base camera = V * S * p_xr * VR_METERS_TO_WORLD. */
+#define VR_METERS_TO_WORLD 100.0f
+static void head_pos_world(const float V[3][3], const float p_xr[3], float out[3])
+{
+    float s_p[3] = { p_xr[0], p_xr[1], -p_xr[2] };
+    for (int r = 0; r < 3; r++)
+        out[r] = (V[r][0] * s_p[0] + V[r][1] * s_p[1] + V[r][2] * s_p[2]) * VR_METERS_TO_WORLD;
+}
+
+static XrView make_view(float px, float py, float pz, float qx, float qy, float qz, float qw,
+                        float l, float r, float u, float d)
+{
+    XrView v = { .type = XR_TYPE_VIEW };
+    v.pose.position = (XrVector3f){ px, py, pz };
+    v.pose.orientation = (XrQuaternionf){ qx, qy, qz, qw };
+    v.fov = (XrFovf){ l, r, u, d };
+    return v;
+}
+
+static void check_bool(const char *label, int cond)
+{
+    if (!cond) {
+        printf("FAIL: %s\n", label);
+        g_failures++;
+    }
+}
+
+static void check_pose(const char *label, const XrView *v,
+                       float px, float py, float pz, float qx, float qy, float qz, float qw)
+{
+    char buf[160];
+    snprintf(buf, sizeof(buf), "%s pos.x", label); check_close(buf, v->pose.position.x, px);
+    snprintf(buf, sizeof(buf), "%s pos.y", label); check_close(buf, v->pose.position.y, py);
+    snprintf(buf, sizeof(buf), "%s pos.z", label); check_close(buf, v->pose.position.z, pz);
+    snprintf(buf, sizeof(buf), "%s ori.x", label); check_close(buf, v->pose.orientation.x, qx);
+    snprintf(buf, sizeof(buf), "%s ori.y", label); check_close(buf, v->pose.orientation.y, qy);
+    snprintf(buf, sizeof(buf), "%s ori.z", label); check_close(buf, v->pose.orientation.z, qz);
+    snprintf(buf, sizeof(buf), "%s ori.w", label); check_close(buf, v->pose.orientation.w, qw);
+}
+
+static void check_fov(const char *label, const XrView *v, const XrFovf *expected)
+{
+    check_bool(label, v->fov.angleLeft == expected->angleLeft && v->fov.angleRight == expected->angleRight
+                       && v->fov.angleUp == expected->angleUp && v->fov.angleDown == expected->angleDown);
+    check_bool(label, v->fov.angleRight != v->fov.angleLeft && v->fov.angleUp != v->fov.angleDown);
+}
+
+static void test_merge_view(void)
+{
+    const XrViewStateFlags POS = XR_VIEW_STATE_POSITION_VALID_BIT;
+    const XrViewStateFlags ORI = XR_VIEW_STATE_ORIENTATION_VALID_BIT;
+    const XrFovf fov = { -0.8f, 0.7f, 0.9f, -0.85f };
+    const XrFovf old_fov = { -0.5f, 0.5f, 0.5f, -0.5f };
+
+    /* Located: pos (1,2,3), ori (0.5,0.5,0.5,0.5). Last good: pos (9,8,7), ori (0,0,1,0)-ish,
+     * with a DIFFERENT fov (which must never leak into the result). */
+    XrView located = make_view(1, 2, 3, 0.5f, 0.5f, 0.5f, 0.5f, fov.angleLeft, fov.angleRight, fov.angleUp, fov.angleDown);
+    XrView last = make_view(9, 8, 7, 0, 0, 1, 0, old_fov.angleLeft, old_fov.angleRight, old_fov.angleUp, old_fov.angleDown);
+    XrView out;
+
+    out = vr_merge_view(&located, POS | ORI, &last);
+    check_pose("(f) all valid", &out, 1, 2, 3, 0.5f, 0.5f, 0.5f, 0.5f);
+    check_fov("(f) all valid fov", &out, &fov);
+
+    out = vr_merge_view(&located, POS | ORI, NULL);
+    check_pose("(f) all valid, no last-good", &out, 1, 2, 3, 0.5f, 0.5f, 0.5f, 0.5f);
+
+    /* 3DoF headset: orientation valid, position not -> live orientation, last-good position. */
+    out = vr_merge_view(&located, ORI, &last);
+    check_pose("(f) orientation-only", &out, 9, 8, 7, 0.5f, 0.5f, 0.5f, 0.5f);
+    check_fov("(f) orientation-only fov", &out, &fov);
+    out = vr_merge_view(&located, ORI, NULL); /* ...and with nothing to fall back to: zero position */
+    check_pose("(f) orientation-only, no last-good", &out, 0, 0, 0, 0.5f, 0.5f, 0.5f, 0.5f);
+
+    /* Position valid, orientation not -> live position, last-good orientation. */
+    out = vr_merge_view(&located, POS, &last);
+    check_pose("(f) position-only", &out, 1, 2, 3, 0, 0, 1, 0);
+    check_fov("(f) position-only fov", &out, &fov);
+    out = vr_merge_view(&located, POS, NULL); /* identity orientation */
+    check_pose("(f) position-only, no last-good", &out, 1, 2, 3, 0, 0, 0, 1);
+
+    /* Neither valid: last-good pose when present... */
+    out = vr_merge_view(&located, 0, &last);
+    check_pose("(f) neither valid, with last-good", &out, 9, 8, 7, 0, 0, 1, 0);
+    check_fov("(f) neither valid, with last-good fov", &out, &fov);
+    /* ...identity/zero when not (first frame) -- and the FOV is still the runtime's. */
+    out = vr_merge_view(&located, 0, NULL);
+    check_pose("(f) neither valid, no last-good", &out, 0, 0, 0, 0, 0, 0, 1);
+    check_fov("(f) neither valid, no last-good fov", &out, &fov);
+    check_bool("(f) type/next set", out.type == XR_TYPE_VIEW && out.next == NULL);
+
+    /* The garbage the runtime may leave in an invalid pose must not leak through. */
+    XrView garbage = make_view(1e30f, -1e30f, 5e29f, 7, 7, 7, 7, fov.angleLeft, fov.angleRight, fov.angleUp, fov.angleDown);
+    out = vr_merge_view(&garbage, 0, NULL);
+    check_pose("(f) invalid pose is discarded", &out, 0, 0, 0, 0, 0, 0, 1);
+}
+
 int main(void)
 {
     /* (a) Identity head pose, identity cockpit orientation (R_true == I,
@@ -262,6 +376,27 @@ int main(void)
         };
         check_centers_at_distance("(d) turned-cockpit/identity-head", combined_rot, world_point, distance);
     }
+
+    /* (e) Eye separation. Runtime-reported eye poses: identity orientation,
+     * positions -/+ 0.0315 m along head-local X (a 63 mm IPD). Cockpit turned
+     * 90deg. The two eyes' world positions must differ by exactly IPD (0.063 m
+     * * VR_METERS_TO_WORLD), along the cockpit's right axis (V column 0). */
+    {
+        float V[3][3];
+        mat3_rot_y(90.0f * (float)M_PI / 180.0f, V);
+        float left_p[3] = { -0.0315f, 0.0f, 0.0f }, right_p[3] = { 0.0315f, 0.0f, 0.0f };
+        float left_w[3], right_w[3];
+        head_pos_world(V, left_p, left_w);
+        head_pos_world(V, right_p, right_w);
+        float d[3] = { right_w[0] - left_w[0], right_w[1] - left_w[1], right_w[2] - left_w[2] };
+        float dist = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        check_close("(e) eye separation == IPD * VR_METERS_TO_WORLD (no doubling)", dist, 0.063f * VR_METERS_TO_WORLD);
+        check_close("(e) separation direction x == cockpit right axis", d[0] / dist, V[0][0]);
+        check_close("(e) separation direction y == cockpit right axis", d[1] / dist, V[1][0]);
+        check_close("(e) separation direction z == cockpit right axis", d[2] / dist, V[2][0]);
+    }
+
+    test_merge_view();
 
     if (g_failures == 0) {
         printf("ALL PASS\n");

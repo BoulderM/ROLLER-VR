@@ -8,6 +8,7 @@
  * vr_present_stereo_frame() (this task's sibling tasks) and vr_shutdown().
  */
 #include "vr_runtime.h"
+#include "vr_view_merge.h"
 
 #include <SDL3/SDL.h>
 
@@ -135,7 +136,7 @@ bool vr_init(void)
     const char *enabled_extensions[] = { XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME };
 
     XrInstanceCreateInfo instance_create_info = { .type = XR_TYPE_INSTANCE_CREATE_INFO };
-    strncpy(instance_create_info.applicationInfo.applicationName, "ROLLER VR Skeleton",
+    strncpy(instance_create_info.applicationInfo.applicationName, "ROLLER VR",
             XR_MAX_APPLICATION_NAME_SIZE - 1);
     instance_create_info.applicationInfo.applicationVersion = 1;
     instance_create_info.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
@@ -285,9 +286,9 @@ bool vr_init(void)
     printf("vr_runtime: created %u swapchains\n", s_view_count);
 
     /* --- 6b. Create a reference space for the projection layer. A composition
-     * layer's `space` must reference a real, previously-created XrSpace — this
-     * runtime doesn't do head tracking yet (Phase 2 follow-up tasks add it),
-     * so LOCAL with an identity pose is enough to satisfy the API contract. */
+     * layer's `space` must reference a real, previously-created XrSpace. LOCAL
+     * with an identity pose is the reference space both xrLocateViews() (head
+     * tracking, vr_locate_views()) and the projection layer are expressed in. */
     s_local_space = XR_NULL_HANDLE;
     XrReferenceSpaceCreateInfo space_create_info = {
         .type = XR_TYPE_REFERENCE_SPACE_CREATE_INFO,
@@ -437,15 +438,8 @@ void vr_shutdown(void)
 
 /* --- Live head tracking + per-eye MVP construction (Phase 2) ------------ */
 
-/* Pure branch logic extracted out of vr_locate_views() so it can be unit-
- * tested without a real OpenXR session (no headset is attached to
- * fatal-gpu, so real tracking-loss can't be triggered on demand). */
-static bool vr_pose_is_usable(XrViewStateFlags flags)
-{
-    return (flags & (XR_VIEW_STATE_POSITION_VALID_BIT | XR_VIEW_STATE_ORIENTATION_VALID_BIT))
-           == (XR_VIEW_STATE_POSITION_VALID_BIT | XR_VIEW_STATE_ORIENTATION_VALID_BIT);
-}
-
+/* Last successfully merged views (each component is its most recent valid
+ * value, or the identity/zero fallback if it never was valid). */
 static XrView s_last_good_views[2];
 static bool   s_have_last_good_views = false;
 
@@ -469,22 +463,14 @@ bool vr_locate_views(XrTime predicted_display_time, XrView out_views[2])
         return true;
     }
 
-    if (!vr_pose_is_usable(view_state.viewStateFlags)) {
-        if (!s_have_last_good_views) {
-            /* No prior good pose to fall back to yet (e.g. very first frame) --
-             * use identity, matching Phase 1's original placeholder pose,
-             * rather than feeding an explicitly-invalid pose downstream. */
-            for (int i = 0; i < 2; i++) {
-                out_views[i] = (XrView){ .type = XR_TYPE_VIEW, .pose = { .orientation = { .w = 1.0f } } };
-            }
-            return true;
-        }
-        memcpy(out_views, s_last_good_views, sizeof(s_last_good_views));
-        return true;
+    /* xrLocateViews succeeded, so the FOV is real even when the pose flags are
+     * not. Merge per component (orientation / position) with the last-good
+     * views; see vr_merge_view() (vr_view_merge.h). */
+    for (int i = 0; i < 2; i++) {
+        out_views[i] = vr_merge_view(&views[i], view_state.viewStateFlags,
+                                     s_have_last_good_views ? &s_last_good_views[i] : NULL);
     }
-
-    memcpy(out_views, views, sizeof(views));
-    memcpy(s_last_good_views, views, sizeof(views));
+    memcpy(s_last_good_views, out_views, sizeof(s_last_good_views));
     s_have_last_good_views = true;
     return true;
 }
@@ -528,11 +514,15 @@ static void mat3_mul(const float a[3][3], const float b[3][3], float out[3][3])
 
 /* Left-multiplies by S = diag(1, 1, -1) -- negates row 2 only, leaves rows
  * 0/1 unchanged. S is its own inverse (S*S = I). It converts between
- * OpenXR's local/reference-space axis convention (-Z forward, matching the
- * eye/view-space convention the kept projection matrix below expects) and
- * the game's own +Z-forward convention (R_true/base_rot, vk1..vk9) -- both
- * are right-handed, +X right/+Y up, and differ only in which way Z points,
- * so a single-axis flip is the full, exact conversion between them. */
+ * OpenXR's local/reference-space axis convention (+X right, +Y up, -Z
+ * forward: a right-handed frame, matching the eye/view-space convention the
+ * kept projection matrix below expects) and the game's own convention
+ * (+X right, +Y up, +Z forward: a left-handed frame; R_true/base_rot,
+ * vk1..vk9). The two frames share X/Y and differ only in the sign of Z, so
+ * a single-axis flip is the full, exact conversion between them. Because
+ * det(S) = -1 it is a reflection (handedness change), not a rotation --
+ * which is exactly why it is applied explicitly instead of being folded
+ * into a rotation matrix. */
 static void mat3_flip_row2(const float src[3][3], float dst[3][3])
 {
     dst[0][0] = src[0][0]; dst[0][1] = src[0][1]; dst[0][2] = src[0][2];
@@ -540,7 +530,7 @@ static void mat3_flip_row2(const float src[3][3], float dst[3][3])
     dst[2][0] = -src[2][0]; dst[2][1] = -src[2][1]; dst[2][2] = -src[2][2];
 }
 
-/* OpenXR reports positions/IPD in meters; ROLLER's world units are a much
+/* OpenXR reports positions in meters; ROLLER's world units are a much
  * smaller, unlabeled scale (SCENE_GPU_NEAR/FAR in scene_render_gpu.h are
  * 10.0f/20000000.0f world units, and menu_render_gpu.c's track-overview
  * camera sits "hundreds of thousands of world units" from the track --
@@ -553,7 +543,7 @@ static void mat3_flip_row2(const float src[3][3], float dst[3][3])
  * is a common engine convention) and revisit once there's an actual
  * rendered VR scene to eyeball against a known real-world reference (e.g.
  * seated eye height in the cockpit). Applied to every meter-scale quantity
- * below (head position delta, IPD offset, near plane) before it's combined
+ * below (head position delta, near plane) before it's combined
  * with world-unit camera state. */
 #define VR_METERS_TO_WORLD 100.0f
 
@@ -561,7 +551,6 @@ void build_mvp_vr_eye(float mvp_out[16],
                        const SceneRenderCamera *base_cam,
                        const SceneRenderProjection *base_proj,
                        const XrView *xr_view,
-                       float eye_offset_m,
                        int vpW, int vpH)
 {
     /* base_rot is a raw copy of base_proj->view -- the vk1..vk9 basis
@@ -651,25 +640,23 @@ void build_mvp_vr_eye(float mvp_out[16],
     float combined_rot[3][3];
     mat3_mul(head_rot_T, s_r_true, combined_rot);
 
-    /* Eye offset along the COMBINED eye's local right axis, and the head's
-     * tracked position delta, both need the SAME world -> ref-space chain
-     * as the orientation above, just run forward instead of inverted:
-     * ref-space/head-local coordinates -> S -> cockpit-frame numbering ->
-     * V -> world. (Column 0 of a local-to-base matrix is that frame's own
-     * local +X expressed in base coordinates -- so column 0 of V*S*H is
-     * the head's local right axis, after both the head's own rotation and
-     * the cockpit's current world heading are applied, expressed in world
-     * coordinates -- not head_rot's right axis in isolation, which would
-     * ignore the car's heading entirely and only be correct while the car
-     * faces the reference space's own reference direction.) Both
-     * quantities are OpenXR meters, so both are scaled by
-     * VR_METERS_TO_WORLD before joining the world-unit camera position. */
-    float s_head_rot[3][3]; /* S * H */
-    mat3_flip_row2(head_rot, s_head_rot);
-    float v_s_h[3][3]; /* V * S * H */
-    mat3_mul(base_rot, s_head_rot, v_s_h);
-    float right_world[3] = { v_s_h[0][0], v_s_h[1][0], v_s_h[2][0] };
-
+    /* The eye's position: the game camera's own world position plus this
+     * eye's tracked position in the reference space, taken through the same
+     * chain as the orientation above but run forward instead of inverted:
+     * ref-space coordinates -> S -> cockpit-frame numbering -> V -> world.
+     * (V's columns are the cockpit's local axes in world coordinates, so
+     * V * S * p converts a reference-space offset into a world-space offset,
+     * taking the car's current heading into account.) Units: OpenXR meters,
+     * scaled by VR_METERS_TO_WORLD to join the world-unit camera position.
+     *
+     * xr_view->pose is PER EYE: xrLocateViews already reports each eye's own
+     * position with the runtime's IPD included (left and right differ by the
+     * IPD along the head's right axis), and the same pose is what
+     * vr_run_frame() submits in XrCompositionLayerProjectionView.pose. So no
+     * separate per-eye IPD offset is applied here -- an earlier version added
+     * a further +-31.5 mm along the head right axis (as the design plan
+     * prescribed), which counted the IPD twice and made the pose rendered
+     * differ from the pose submitted. */
     float p_xr[3] = {
         xr_view->pose.position.x, xr_view->pose.position.y, xr_view->pose.position.z
     };
@@ -680,10 +667,9 @@ void build_mvp_vr_eye(float mvp_out[16],
                             + base_rot[r][1] * s_p_xr[1]
                             + base_rot[r][2] * s_p_xr[2]) * VR_METERS_TO_WORLD;
 
-    float eye_offset_world = eye_offset_m * VR_METERS_TO_WORLD;
-    float eye_x = base_cam->viewX + head_pos_world[0] + right_world[0] * eye_offset_world;
-    float eye_y = base_cam->viewY + head_pos_world[1] + right_world[1] * eye_offset_world;
-    float eye_z = base_cam->viewZ + head_pos_world[2] + right_world[2] * eye_offset_world;
+    float eye_x = base_cam->viewX + head_pos_world[0];
+    float eye_y = base_cam->viewY + head_pos_world[1];
+    float eye_z = base_cam->viewZ + head_pos_world[2];
 
     /* Asymmetric perspective from the OpenXR-reported per-eye FOV -- this is
      * the one place VR genuinely needs a different projection construction
@@ -749,10 +735,6 @@ void build_mvp_vr_eye(float mvp_out[16],
 }
 
 /* --- Per-frame execution (Task 7: OpenXR bracketing + per-eye present) --- */
-
-/* Half of a 63mm default IPD; revisited in Phase 3 once there's a real
- * rendered scene to calibrate comfort/IPD settings against. */
-#define VR_EYE_OFFSET_M 0.0315f
 
 static XrView       s_frame_views[2];
 static bool         s_should_render_this_tick = false;
@@ -1023,9 +1005,8 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
         };
 
         float eye_mvp[16];
-        float eye_sign = (i == 0) ? -1.0f : 1.0f;
         build_mvp_vr_eye(eye_mvp, &base_cam, &base_proj, &s_frame_views[i],
-                          eye_sign * VR_EYE_OFFSET_M, (int)view_configs_width(i), (int)view_configs_height(i));
+                          (int)view_configs_width(i), (int)view_configs_height(i));
         game_render_set_vr_eye_mvp(g_pGameRenderer, eye_mvp);
 
         /* draw_road() recomputes calculateview()/calculatetransform() fresh
