@@ -73,6 +73,9 @@ extern int  g_iFpsBackground;      /* background FPS cap: 0=off, else the target
 SDL_GPUDevice *ROLLERGetGPUDevice(void);
 SDL_Window *ROLLERGetWindow(void);
 
+extern int g_bVRMode;
+extern char g_szVRTrackPath[260];
+
 // Debug overlay accessor
 struct DebugOverlay;
 struct DebugOverlay *ROLLERGetDebugOverlay(void);

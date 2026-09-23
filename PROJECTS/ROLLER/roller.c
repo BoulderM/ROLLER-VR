@@ -116,6 +116,8 @@ static int s_iGPUPresentSkipFrames = 0;
 #if defined(IS_ANDROID)
 static bool s_bAndroidDefaultConfigPending = false;
 #endif
+int g_bVRMode = 0;
+char g_szVRTrackPath[260] = { 0 };
 bool g_bPaletteSet = false;
 float g_fDrawDistanceFraction = 1.0f;
 bool g_bNoCollisionLimit = true;
@@ -769,7 +771,7 @@ int InitSDL(char *whiplash_root, const char *midi_root)
 #endif
 
   Uint32 uiSdlInitFlags = SDL_INIT_VIDEO;
-  if (!g_bSnapshotMode)
+  if (!g_bSnapshotMode && !g_bVRMode)
     uiSdlInitFlags |= SDL_INIT_AUDIO;
   if (!SDL_Init(uiSdlInitFlags)) {
     ErrorBoxExit("Couldn't initialize SDL: %s", SDL_GetError());
@@ -816,6 +818,23 @@ int InitSDL(char *whiplash_root, const char *midi_root)
     // succeed without a display server.
     return 0;
   }
+
+#if !defined(IS_WASM)
+  if (g_bVRMode) {
+    /* Windowless like snapshot mode, but (unlike snapshot mode) we need a
+     * real SDL_GPU device — OpenXR binds to it directly, matching the Phase 1
+     * walking-skeleton's own SDL_CreateGPUDevice call exactly. s_pGPUDevice
+     * only exists on non-WASM targets (see its declaration above), and VR
+     * mode is meaningless in a browser build anyway. */
+    s_pGPUDevice = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, NULL);
+    if (!s_pGPUDevice) {
+      ErrorBoxExit("Couldn't create GPU device: %s", SDL_GetError());
+      return 1;
+    }
+    SDL_Log("GPU driver (VR mode): %s", SDL_GetGPUDeviceDriver(s_pGPUDevice));
+    return 0;
+  }
+#endif
 
 #if defined(_WIN32)
   InputLoadStartupConfig();

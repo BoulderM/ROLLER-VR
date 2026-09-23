@@ -608,6 +608,7 @@ static void print_usage(FILE *f, const char *argv0)
   cli_fprintf(f, " --frames N[,M,...]     replay-frame indices to capture (--snapshot only)\n");
   cli_fprintf(f, " --out DIR              output directory for snapshot PNGs (--snapshot only)\n");
   cli_fprintf(f, " --gpu-parity BACKEND   run F-S1 parity (vulkan, direct3d12, or metal)\n");
+  cli_fprintf(f, " --vr                    boot headless into VR mode (windowless GPU device, direct race start)\n");
   cli_fprintf(f, " --track-path PATH       load a track directly from an absolute path\n");
   cli_fprintf(f, " --track-asset-root DIR  resolve direct-track assets from this document root first\n");
   cli_fprintf(f, " --track-fallback-root DIR  override the direct-track FATDATA fallback root\n");
@@ -2960,6 +2961,9 @@ int main(int argc, const char **argv, const char **envp)
         cli_fprintf(stderr, "ERROR: '--gpu-parity' needs an argument\n");
         return 1;
       }
+    } else if (strcmp(argv[i], "--vr") == 0) {
+      g_bVRMode = 1;
+      consumed = 1;
     } else if (strcmp(argv[i], "--track-path") == 0) {
       if (i + 1 < argc) {
         g_szDirectTrackPath = argv[i + 1];
@@ -3025,8 +3029,8 @@ int main(int argc, const char **argv, const char **envp)
   }
 
   if (szGpuParityBackend) {
-    if (g_bSnapshotMode || g_szDirectTrackPath) {
-      cli_fprintf(stderr, "ERROR: '--gpu-parity' cannot be combined with snapshot or track-path mode\n");
+    if (g_bSnapshotMode || g_szDirectTrackPath || g_bVRMode) {
+      cli_fprintf(stderr, "ERROR: '--gpu-parity' cannot be combined with snapshot, track-path, or vr mode\n");
       return 1;
     }
     return ROLLERGpuParityRun(szGpuParityBackend);
@@ -3103,12 +3107,16 @@ int main(int argc, const char **argv, const char **envp)
     // The CD-image extraction prompt, replays directory bootstrap, and audio
     // probe are all interactive or audio-device-dependent: skip in headless
     // snapshot mode. The replay file is loaded directly from cwd later.
+    // VR mode still needs FATDATA/tracks (it loads a real track, unlike
+    // snapshot's fixed replay/scene modes) but skips the audio-device probe
+    // the same way snapshot mode does, for headless operation.
 #if !defined(IS_ANDROID)
     InitFATDATA(whiplash_root);
 #endif
     InitREPLAYS(whiplash_root);
     InitTRACKS(whiplash_root);
-    ROLLERGetAudioInfo();
+    if (!g_bVRMode)
+      ROLLERGetAudioInfo();
   }
 
   ROLLERCommsSetCommandBase(0x686C6361u);          // Initialize communication system with base command
@@ -3256,7 +3264,7 @@ int main(int argc, const char **argv, const char **envp)
   winner_mode = 0;
   intro = -1;
   race_set_track(TrackLoad);                    // Start initial intro replay through the dispatcher.
-  frontend_run_game_loop(g_bSnapshotMode ? eFRONTEND_STATE_RACING : eFRONTEND_STATE_COPYRIGHT);
+  frontend_run_game_loop((g_bSnapshotMode || g_bVRMode) ? eFRONTEND_STATE_RACING : eFRONTEND_STATE_COPYRIGHT);
   //__asm { int     10h; Reset video mode and exit game }// Reset video mode and exit game
   if (!frontend_shutdown_complete())
     doexit();
