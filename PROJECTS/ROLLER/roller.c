@@ -2165,7 +2165,12 @@ void UpdateSDL()
       }
     }
 
-    if (g_bVsync) {
+    /* VR mode (g_bVRMode, --vr): UpdateSDL() runs between xrBeginFrame and
+     * xrEndFrame, and the frame pacing belongs to xrWaitFrame (the runtime's
+     * display rate, e.g. 90/120 Hz). With no window this limiter would fall back
+     * to 60 Hz and SDL_DelayNS-sleep inside the XR frame, missing every frame on
+     * a faster headset -- so it is skipped. g_bVRMode is 0 in every non-VR run. */
+    if (g_bVsync && !g_bVRMode) {
       /* No GameRenderer exists on frontend/menu pages. Treat that as its own
        * refresh-paced mode so non-blocking menu presentation cannot spin the
        * outer loop at an uncapped rate. */
@@ -2224,7 +2229,7 @@ void UpdateSDL()
   bool bWindowMinimized = s_pWindow &&
       (SDL_GetWindowFlags(s_pWindow) & SDL_WINDOW_MINIMIZED) != 0;
   bool bDebugOverlayVisible = debug_overlay_visible(s_pDebugOverlay);
-  bool bApplyBgCap = g_iFpsBackground > 0 &&
+  bool bApplyBgCap = g_iFpsBackground > 0 && !g_bVRMode && /* VR: xrWaitFrame paces */
       (eFrontendCurrentState == eFRONTEND_STATE_PAUSE_OVERLAY ||
        g_bShiftFrozen || bWindowMinimized || bDebugOverlayVisible);
   if (bApplyBgCap) {
