@@ -1227,28 +1227,37 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
 
         /* Post-copy: restore the resolved eye texture to the layout SDL_GPU's own
          * bookkeeping assumes it's sitting in (see the long comment above), and
-         * bring the swapchain image to VK_IMAGE_LAYOUT_GENERAL for the OpenXR
-         * runtime -- the same target layout Phase 1's original clear-loop used and
-         * that was confirmed working end-to-end against Monado on fatal-gpu. */
+         * hand the swapchain image back in VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL.
+         * The OpenXR spec (XR_KHR_vulkan_enable/enable2, "Swapchain Image Layout")
+         * says that on xrReleaseSwapchainImage the runtime interprets the image as
+         * "Having a memory layout compatible with VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_
+         * OPTIMAL for color images" and that "The application is responsible for
+         * transitioning the swapchain image back to the image layout ... that the
+         * OpenXR runtime requires". (Phase 1/early Phase 2 left it in GENERAL,
+         * which only worked by luck: Monado's release barrier assumes
+         * COLOR_ATTACHMENT_OPTIMAL.) Colour-attachment access masks pair with the
+         * COLOR_ATTACHMENT_OUTPUT dst stage below. */
         VkImageMemoryBarrier src_back_to_sampler = src_to_transfer_src;
         src_back_to_sampler.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         src_back_to_sampler.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         src_back_to_sampler.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
         src_back_to_sampler.dstAccessMask = 0;
-        VkImageMemoryBarrier dst_to_general = dst_to_transfer_dst;
-        dst_to_general.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        dst_to_general.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-        dst_to_general.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        dst_to_general.dstAccessMask = 0;
-        VkImageMemoryBarrier post_barriers[2] = { src_back_to_sampler, dst_to_general };
-        /* BOTTOM_OF_PIPE_BIT as dstStage (no explicit access masks), same
-         * externally-synchronized reasoning as the pre-copy barrier above: the
+        VkImageMemoryBarrier dst_to_color_attachment = dst_to_transfer_dst;
+        dst_to_color_attachment.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        dst_to_color_attachment.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        dst_to_color_attachment.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        dst_to_color_attachment.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        VkImageMemoryBarrier post_barriers[2] = { src_back_to_sampler, dst_to_color_attachment };
+        /* COLOR_ATTACHMENT_OUTPUT as dstStage (matches the swapchain image's
+         * colour-attachment dst access; the resolved-texture barrier has dst access
+         * 0, valid at any stage). Same externally-synchronized reasoning as the
+         * pre-copy barrier above: the
          * next real GPU usage of either image happens in a later, independently
          * submitted/fenced command buffer (next frame's SDL_GPU render pass for
          * resolved_vk_image, the OpenXR runtime's own compositor for target_image),
          * not anything ordered against this command buffer directly. */
         vkCmdPipelineBarrier(s_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                              VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 2, post_barriers);
+                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 2, post_barriers);
         vkEndCommandBuffer(s_command_buffer);
 
         VkSubmitInfo submit_info = {
