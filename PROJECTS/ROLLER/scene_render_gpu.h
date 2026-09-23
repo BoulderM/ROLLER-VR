@@ -59,6 +59,30 @@ void scene_render_gpu_set_viewport(SceneRendererGPU *r,
 void scene_render_gpu_set_projection_reference_height(SceneRendererGPU *r,
                                                        int height);
 
+/* Overrides build_mvp()'s computed matrix for the next end-frame call only
+ * (auto-clears after use). Used by VR to substitute a head-tracked, eye-
+ * offset MVP in place of the normal single camera. NULL/never-called means
+ * normal (non-VR) behavior is completely unaffected. */
+void scene_render_gpu_set_vr_eye_mvp(SceneRendererGPU *r, const float mvp[16]);
+
+/* Returns the resolved offscreen colour target (post 3D/signs/HUD, pre-blit)
+ * that a windowless renderer's end_frame call rendered into. */
+SDL_GPUTexture *scene_render_gpu_get_offscreen_texture(SceneRendererGPU *r);
+
+/* One-shot: returns and clears the fence left by the most recent windowless,
+ * non-readback end_frame call (see scene_render_gpu_end_frame_to_vr_eye).
+ * NULL if no such fence is pending. */
+SDL_GPUFence *scene_render_gpu_get_last_fence(SceneRendererGPU *r);
+
+/* Renders the queued scene into the renderer's offscreen texture at
+ * uiWidth x uiHeight (windowless renderers only -- returns NULL if r->window
+ * is set), submits with a fence (retrievable via scene_render_gpu_get_last_
+ * fence) instead of waiting/reading back, and returns the offscreen texture
+ * on success or NULL on failure. */
+SDL_GPUTexture *scene_render_gpu_end_frame_to_vr_eye(SceneRendererGPU *r,
+                                                      Uint32 uiWidth,
+                                                      Uint32 uiHeight);
+
 void scene_render_gpu_set_camera(SceneRendererGPU *r,
                                  const SceneRenderCamera *cam);
 void scene_render_gpu_set_projection(SceneRendererGPU *r,
@@ -166,7 +190,7 @@ void texture_uv_map_dump(int texId, bool splitScreen);
 void scene_render_gpu_set_debug_overlay(SceneRendererGPU *r, DebugOverlay *overlay);
 void scene_render_gpu_set_crt_filter(SceneRendererGPU *r, struct CRTFilter *filter);
 
-void scene_render_gpu_build_vp(const SceneRendererGPU *r, float vp[16]);
+void scene_render_gpu_build_vp(SceneRendererGPU *r, float vp[16]);
 int  scene_render_gpu_get_render_chunk(const SceneRendererGPU *r);
 
 /* Project an already-camera-space point (fvx,fvy,fvz -- the same R·(world-cam)

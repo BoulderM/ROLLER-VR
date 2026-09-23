@@ -286,6 +286,7 @@ struct SceneRendererGPU {
     SDL_GPUTexture       *swapchainTex;
     SDL_GPUTransferBuffer *readbackXfer;
     Uint32                 readbackCapacity;
+    SDL_GPUFence *lastVrFence; /* set only for windowless, non-readback end_frame calls; one-shot, cleared by scene_render_gpu_get_last_fence */
 
     /* ---- Texture bank ---- */
     SceneGPUTextureSlot texSlots[SCENE_GPU_MAX_TEXTURE_SLOTS];
@@ -298,6 +299,11 @@ struct SceneRendererGPU {
     /* ---- Viewport ---- */
     int viewportX, viewportY, viewportW, viewportH;
     int projectionReferenceHeight;
+
+    /* One-shot override of build_mvp()'s computed matrix, consumed by
+     * scene_render_gpu_build_vp(); see scene_render_gpu_set_vr_eye_mvp(). */
+    bool  vrEyeMvpOverrideSet;
+    float vrEyeMvpOverride[16];
 
     /* ---- Sky clear color ---- */
     float skyR, skyG, skyB;
@@ -847,8 +853,13 @@ static void build_mvp(float mvp[16],
         mvp[j*4+1] += shift_y * mvp[j*4+3];
 }
 
-void scene_render_gpu_build_vp(const SceneRendererGPU *r, float vp[16])
+void scene_render_gpu_build_vp(SceneRendererGPU *r, float vp[16])
 {
+    if (r->vrEyeMvpOverrideSet) {
+        memcpy(vp, r->vrEyeMvpOverride, sizeof(r->vrEyeMvpOverride));
+        r->vrEyeMvpOverrideSet = false; /* one-shot, like the real spec intended */
+        return;
+    }
     int vpW = r->viewportW > 0 ? r->viewportW : 640;
     int vpH = r->viewportH > 0 ? r->viewportH : 400;
     build_mvp(vp, &r->camera, &r->proj, vpW, vpH, r->fovMultiplier,
@@ -3606,13 +3617,14 @@ static bool scene_render_gpu_end_frame_internal(SceneRendererGPU *r,
     Uint64 tHudPost = SDL_GetTicksNS();
     r->hudPostNs = tHudPost - tDraw;
 
+    bool bWantFence = bReadback || !r->window;
     bool bFrameOk = true;
     SDL_GPUFence *pFence = NULL;
-    if (bReadback) {
+    if (bWantFence) {
         pFence = SDL_SubmitGPUCommandBufferAndAcquireFence(r->cmdBuf);
         bFrameOk = pFence != NULL;
         if (!pFence) {
-            SDL_Log("scene_render_gpu: readback command submission failed: %s",
+            SDL_Log("scene_render_gpu: command submission failed: %s",
                     SDL_GetError());
         }
     } else {
@@ -3620,7 +3632,7 @@ static bool scene_render_gpu_end_frame_internal(SceneRendererGPU *r,
     }
     r->cmdBuf = NULL;
 
-    if (pFence) {
+    if (pFence && bReadback) {
         SDL_GPUFence *apFences[1] = { pFence };
         if (!SDL_WaitForGPUFences(r->device, true, apFences, 1)) {
             SDL_Log("scene_render_gpu: readback fence wait failed: %s",
@@ -3641,6 +3653,12 @@ static bool scene_render_gpu_end_frame_internal(SceneRendererGPU *r,
             }
         }
         SDL_ReleaseGPUFence(r->device, pFence);
+    } else if (pFence) {
+        /* Windowless non-readback (VR eye render): hand the fence to the
+         * caller instead of waiting/releasing it here -- vr_present_stereo_frame
+         * (Task 7) waits on it right before the vkCmdCopyImage that needs
+         * this render's output, then releases it via the getter below. */
+        r->lastVrFence = pFence;
     }
     r->submitNs = SDL_GetTicksNS() - tHudPost;
 
@@ -3706,6 +3724,30 @@ bool scene_render_gpu_end_frame_readback(SceneRendererGPU *r,
                                                 uiWidth, uiHeight);
 }
 
+SDL_GPUTexture *scene_render_gpu_get_offscreen_texture(SceneRendererGPU *r)
+{
+    return r ? r->offscreenTex : NULL;
+}
+
+SDL_GPUFence *scene_render_gpu_get_last_fence(SceneRendererGPU *r)
+{
+    if (!r) return NULL;
+    SDL_GPUFence *f = r->lastVrFence;
+    r->lastVrFence = NULL; /* one-shot, mirrors the VR-eye MVP override's one-shot pattern */
+    return f;
+}
+
+SDL_GPUTexture *scene_render_gpu_end_frame_to_vr_eye(SceneRendererGPU *r,
+                                                      Uint32 uiWidth,
+                                                      Uint32 uiHeight)
+{
+    if (!r || r->window) return NULL; /* VR eyes are windowless renderers only */
+    r->viewportW = (int)uiWidth;
+    r->viewportH = (int)uiHeight;
+    if (!scene_render_gpu_end_frame(r)) return NULL;
+    return scene_render_gpu_get_offscreen_texture(r);
+}
+
 void scene_render_gpu_cancel_frame(SceneRendererGPU *r)
 {
     if (!r || !r->cmdBuf) return;
@@ -3749,6 +3791,13 @@ void scene_render_gpu_set_projection_reference_height(SceneRendererGPU *r,
 {
     if (!r) return;
     r->projectionReferenceHeight = height > 0 ? height : 0;
+}
+
+void scene_render_gpu_set_vr_eye_mvp(SceneRendererGPU *r, const float mvp[16])
+{
+    if (!r) return;
+    memcpy(r->vrEyeMvpOverride, mvp, sizeof(r->vrEyeMvpOverride));
+    r->vrEyeMvpOverrideSet = true;
 }
 
 void scene_render_gpu_set_camera(SceneRendererGPU *r, const SceneRenderCamera *cam)
