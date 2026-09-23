@@ -2404,6 +2404,46 @@ void updatescreen()
   else
     small_poly = 100;
   time_shown = 0;
+#if defined(ROLLER_VR_BUILD)
+  /* VR stereo present. Deliberately placed HERE (right after the single
+   * game_render_begin_frame() call above, which vr_present_stereo_frame()'s
+   * documented precondition relies on for eye 0) rather than at the single
+   * main-view draw_road()+game_render_end_frame() site far below. Reason:
+   * everything between here and that site is a set of EARLIER, independent
+   * present paths that each call draw_road()+game_render_end_frame() (or
+   * game_copypic() and LABEL_59) and `return`/goto out on their own:
+   *   - Play_View == 1 (rear-view mirror, LABEL_14 / game_render_end_frame)
+   *   - Play_View == 2 (side-view mirror, LABEL_14 / game_render_end_frame)
+   *   - player_type == 2 (2-player split screen, goto LABEL_59)
+   * All three are reachable during normal play: Play_View is
+   * Selected_Play[SelectedView[0]] (select_view(), func2.c), and the player
+   * can cycle SelectedView onto the mirror views (2 and 7) with the normal
+   * view-change key at any time, or start on one via game_view[]; player_type
+   * comes from the saved game config. A guard only at the main-view site
+   * would let VR mode silently fall through one of them on those ticks and
+   * do a single-eye, windowless present (no stereo, no OpenXR swapchain
+   * submit). VR intentionally has no mirror/split-screen/widescreen-cheat/
+   * cinema presentation (Phase 2 design non-goal), so it bypasses all of them.
+   *
+   * The main-view geometry below is the plain single-player full-size
+   * window, i.e. the same values the paused-under-widescreen branch below
+   * uses (full scr_size, centered window, xbase 159), set here explicitly
+   * since the code that would normally establish them is being skipped. */
+  if (g_bVRMode) {
+    if (SVGA_ON)
+      scr_size = 128;
+    else
+      scr_size = 64;
+    winh = (200 * scr_size + 32) >> 6;
+    winw = (320 * scr_size + 32) >> 6;
+    winx = (XMAX - winw) / 2;
+    winy = (YMAX - winh) / 2;
+    xbase = 159;
+    vr_present_stereo_frame(scrbuf, ViewType[0], DriveView[0]);
+    init_animate_ads();
+    return;
+  }
+#endif
   if (!Play_View)
     goto LABEL_30;                              // Check if we're in a play view mode (rear view or side view)
   if ((uint8)Play_View <= 1u)       // Handle rear view mode (Play_View <= 1)
