@@ -72,7 +72,7 @@ void scene_render_gpu_set_projection_reference_height(SceneRendererGPU *r,
  * other screen sharing g_pGameRenderer. In other words: call this once per
  * eye, right before that eye's own draw_road() call, and it will cover
  * exactly that eye's full render+end-frame cycle and no more. Used by VR to
- * substitute a head-tracked, eye-offset MVP in place of the normal single
+ * substitute a per-eye head-tracked MVP in place of the normal single
  * camera; the caller (vr_present_stereo_frame(), vr_runtime.c) sets a fresh
  * override before each eye's own draw_road() call. NULL/never-called means
  * normal (non-VR) behavior is completely unaffected. */

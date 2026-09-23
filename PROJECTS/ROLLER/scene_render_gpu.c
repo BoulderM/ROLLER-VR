@@ -300,9 +300,11 @@ struct SceneRendererGPU {
     int viewportX, viewportY, viewportW, viewportH;
     int projectionReferenceHeight;
 
-    /* Persist-until-replaced override of build_mvp()'s computed matrix,
-     * consumed (but not cleared) by scene_render_gpu_build_vp(); see
-     * scene_render_gpu_set_vr_eye_mvp() and that function's own comment. */
+    /* Override of build_mvp()'s computed matrix, read (not consumed) by
+     * scene_render_gpu_build_vp() for as long as it is set: set before each
+     * eye's draw_road(), cleared by scene_render_gpu_end_frame_to_vr_eye()
+     * once that eye's render is done. See scene_render_gpu_set_vr_eye_mvp()
+     * and scene_render_gpu_build_vp()'s comment. */
     bool  vrEyeMvpOverrideSet;
     float vrEyeMvpOverride[16];
 
@@ -3751,7 +3753,7 @@ SDL_GPUFence *scene_render_gpu_get_last_fence(SceneRendererGPU *r)
 {
     if (!r) return NULL;
     SDL_GPUFence *f = r->lastVrFence;
-    r->lastVrFence = NULL; /* one-shot, mirrors the VR-eye MVP override's one-shot pattern */
+    r->lastVrFence = NULL; /* one-shot handoff: the caller now owns (and must release) the fence */
     return f;
 }
 
