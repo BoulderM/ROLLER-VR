@@ -857,17 +857,22 @@ static void build_mvp(float mvp[16],
 void scene_render_gpu_build_vp(SceneRendererGPU *r, float vp[16])
 {
     if (r->vrEyeMvpOverrideSet) {
-        /* Persist-until-replaced, NOT one-shot (task-7-review Finding 2):
+        /* Persist-until-cleared, NOT one-shot (task-7-review Finding 2):
          * game_render_hw_draw_car() bakes this function's result into each
          * car's draw command AT QUEUE TIME (during draw_road()), while
          * world geometry only reads it back at END-FRAME time (Pass A, see
          * scene_render_gpu_end_frame_internal). A one-shot override got
          * consumed by whichever of those ran first, leaving everything
          * after it back on the flat, non-VR camera. Safe as persist-until-
-         * replaced because vr_present_stereo_frame() (vr_runtime.c) sets a
+         * cleared because vr_present_stereo_frame() (vr_runtime.c) sets a
          * fresh override via scene_render_gpu_set_vr_eye_mvp() before EACH
          * eye's own draw_road() call, naturally replacing whatever the
-         * previous eye set -- there's no cross-eye/cross-frame
+         * previous eye set -- and scene_render_gpu_end_frame_to_vr_eye()
+         * clears it (scene_render_gpu_clear_vr_eye_mvp()) right after that
+         * eye's render is fully done (task-7-round2 New Important 2), so it
+         * can never survive to contaminate the mirror/cinema/secondary-view
+         * passes or any other screen sharing this renderer after the VR
+         * frame is over -- there's no cross-eye/cross-frame/cross-consumer
          * contamination as long as every VR render sets its own override
          * before queueing anything, which it does. */
         memcpy(vp, r->vrEyeMvpOverride, sizeof(r->vrEyeMvpOverride));
@@ -3775,7 +3780,23 @@ SDL_GPUTexture *scene_render_gpu_end_frame_to_vr_eye(SceneRendererGPU *r,
      * directly to go through its existing clamp logic, even though 1.0f is
      * always above the 0.25f floor. */
     scene_render_gpu_set_render_scale(r, 1.0f);
-    if (!scene_render_gpu_end_frame(r)) return NULL;
+    bool ended_ok = scene_render_gpu_end_frame(r);
+    /* task-7-round2 New Important 2: this eye's render (cars queued during
+     * draw_road(), world geometry consumed in Pass A inside end_frame()
+     * above) is the last consumer of whatever VR-eye MVP override
+     * vr_present_stereo_frame() set for it -- clear it here, now that this
+     * eye's full render+end-frame cycle is done, so it doesn't leak into
+     * the NEXT consumer of scene_render_gpu_build_vp() on this renderer
+     * (the mirror pass, cinema/secondary-view passes via
+     * scene_render_gpu_flush_secondary_view(), or any other screen sharing
+     * g_pGameRenderer, e.g. firework_screen()). Cleared unconditionally,
+     * on both success and failure: even a failed render already consumed
+     * (or attempted to consume) the override, so leaving it set after a
+     * failure would still contaminate whatever renders next. See
+     * scene_render_gpu_set_vr_eye_mvp()'s own doc comment for the full
+     * contract. */
+    scene_render_gpu_clear_vr_eye_mvp(r);
+    if (!ended_ok) return NULL;
     return scene_render_gpu_get_offscreen_texture(r);
 }
 
@@ -3829,6 +3850,12 @@ void scene_render_gpu_set_vr_eye_mvp(SceneRendererGPU *r, const float mvp[16])
     if (!r) return;
     memcpy(r->vrEyeMvpOverride, mvp, sizeof(r->vrEyeMvpOverride));
     r->vrEyeMvpOverrideSet = true;
+}
+
+void scene_render_gpu_clear_vr_eye_mvp(SceneRendererGPU *r)
+{
+    if (!r) return;
+    r->vrEyeMvpOverrideSet = false;
 }
 
 void scene_render_gpu_set_camera(SceneRendererGPU *r, const SceneRenderCamera *cam)

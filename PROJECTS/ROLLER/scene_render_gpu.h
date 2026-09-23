@@ -59,16 +59,34 @@ void scene_render_gpu_set_viewport(SceneRendererGPU *r,
 void scene_render_gpu_set_projection_reference_height(SceneRendererGPU *r,
                                                        int height);
 
-/* Overrides build_mvp()'s computed matrix, persisting until the next call to
- * this function replaces it (NOT auto-cleared -- see scene_render_gpu_
- * build_vp()'s own comment for why: cars consume it at queue time, world
- * geometry at end-frame time, so a one-shot override could get consumed by
- * whichever ran first). Used by VR to substitute a head-tracked, eye-offset
- * MVP in place of the normal single camera; the caller (vr_present_stereo_
- * frame(), vr_runtime.c) sets a fresh override before each eye's own
- * draw_road() call. NULL/never-called means normal (non-VR) behavior is
- * completely unaffected. */
+/* Overrides build_mvp()'s computed matrix. Persists across BOTH consumers
+ * that read it within a single eye's render -- cars, which bake it in at
+ * queue time (draw_road()), and world geometry, which reads it back at
+ * end-frame time (Pass A, scene_render_gpu_end_frame_internal) -- so a
+ * one-shot override can't get consumed by whichever of the two ran first.
+ * It is NOT persist-forever, though: scene_render_gpu_end_frame_to_vr_eye()
+ * clears it automatically (via scene_render_gpu_clear_vr_eye_mvp() below)
+ * right after that eye's render is fully done, so it does not leak into
+ * whatever renders next on this same renderer -- the mirror pass, cinema/
+ * secondary-view passes (scene_render_gpu_flush_secondary_view()), or any
+ * other screen sharing g_pGameRenderer. In other words: call this once per
+ * eye, right before that eye's own draw_road() call, and it will cover
+ * exactly that eye's full render+end-frame cycle and no more. Used by VR to
+ * substitute a head-tracked, eye-offset MVP in place of the normal single
+ * camera; the caller (vr_present_stereo_frame(), vr_runtime.c) sets a fresh
+ * override before each eye's own draw_road() call. NULL/never-called means
+ * normal (non-VR) behavior is completely unaffected. */
 void scene_render_gpu_set_vr_eye_mvp(SceneRendererGPU *r, const float mvp[16]);
+
+/* Clears whatever override scene_render_gpu_set_vr_eye_mvp() last set, so
+ * scene_render_gpu_build_vp() goes back to its normal camera-derived
+ * behavior. Called automatically by scene_render_gpu_end_frame_to_vr_eye()
+ * at the end of that eye's render -- see scene_render_gpu_set_vr_eye_mvp()'s
+ * own comment. Exposed publicly in case a future caller ever needs to bail
+ * out of an in-progress VR eye render without going through end_frame_to_
+ * vr_eye() at all; normal VR present flow does not need to call this
+ * itself. */
+void scene_render_gpu_clear_vr_eye_mvp(SceneRendererGPU *r);
 
 /* Returns the resolved offscreen colour target (post 3D/signs/HUD, pre-blit)
  * that a windowless renderer's end_frame call rendered into. */

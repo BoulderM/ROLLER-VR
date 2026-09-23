@@ -44,6 +44,22 @@ static XrSpace s_local_space;
 static VkCommandPool s_command_pool;
 static VkCommandBuffer s_command_buffer;
 static bool s_session_running;
+/* task-7-round2 New Important 1: true from the moment vr_run_frame()'s own
+ * xrBeginFrame() succeeds until its own xrEndFrame() call (success or
+ * failure) or vr_shutdown()'s frame-close-out below runs. Lets vr_shutdown()
+ * tell apart the two shutdown paths that reach it (see vr_shutdown()'s own
+ * comment): called mid-frame, from inside vr_run_frame() via
+ * main_loop_iteration()->frontend_shutdown_finish() (game-initiated quit),
+ * vs. called at the top level after vr_run_frame()'s own event loop already
+ * saw XR_SESSION_STATE_STOPPING and returned (runtime-initiated shutdown,
+ * no frame outstanding). */
+static bool s_frame_open = false;
+/* Moved up from its original spot in the "Per-frame execution" section below
+ * (task-7-round2) so vr_shutdown() -- defined above that section -- can read
+ * s_frame_state.predictedDisplayTime when closing out a still-open frame on
+ * the game-initiated quit path (see vr_shutdown()'s own comment). Still set
+ * fresh by vr_run_frame() every tick via xrWaitFrame(), same as before. */
+static XrFrameState s_frame_state;
 
 static bool fail(const char *what)
 {
@@ -327,17 +343,88 @@ void vr_shutdown(void)
     vkDeviceWaitIdle(s_vk_device);
     vkFreeCommandBuffers(s_vk_device, s_command_pool, 1, &s_command_buffer);
     vkDestroyCommandPool(s_vk_device, s_command_pool, NULL);
+    s_command_buffer = VK_NULL_HANDLE;
+    s_command_pool = VK_NULL_HANDLE;
+
     for (Uint32 i = 0; i < s_view_count; i++) {
         xrDestroySwapchain(s_swapchains[i]);
     }
     free(s_swapchains);
     free(s_view_configs);
+    s_swapchains = NULL;
+    s_view_configs = NULL;
+    s_view_count = 0;
+
     xrDestroySpace(s_local_space);
+    s_local_space = XR_NULL_HANDLE;
+
+    /* task-7-round2 New Important 1: frontend_shutdown_finish() (3d.c) --
+     * this function's only caller -- runs from inside main_loop_iteration(),
+     * which itself can run from inside vr_run_frame() (between its own
+     * xrBeginFrame() and xrEndFrame() calls) on the game-initiated quit
+     * path: main_loop_iteration() reaches frontend's SHUTDOWN state and
+     * calls frontend_shutdown_finish() synchronously, still nested inside
+     * that same open vr_run_frame() frame. s_frame_open (set by
+     * vr_run_frame() around its own xrBeginFrame()/xrEndFrame() pair, see
+     * there) tells that case apart from the other path that reaches here:
+     * the runtime-initiated one, where vr_run_frame()'s event-poll loop
+     * already saw XR_SESSION_STATE_STOPPING and returned false with no
+     * frame outstanding (frontend_run_game_loop()'s `while (vr_run_frame())`
+     * loop then exits, and doexit() in main() drives the frontend shutdown
+     * state machine the rest of the way from the top level) -- s_session_
+     * running is still true on both paths (nothing else ever clears it), so
+     * it alone can't distinguish them.
+     *
+     * On the frame-open path: xrEndSession() requires XR_SESSION_STATE_
+     * STOPPING (OpenXR spec), but the session here is still just RUNNING --
+     * the runtime never asked us to stop, the game did. Reaching STOPPING
+     * the spec-clean way means xrRequestExitSession() + draining events
+     * until the runtime actually delivers that transition, which is
+     * unbounded async runtime-driven latency with no good way to bound it
+     * from inside a synchronous one-shot teardown call -- out of scope here
+     * (left as future work; the process is exiting regardless). Instead we
+     * just close out the still-open frame with an empty-layer xrEndFrame()
+     * (required regardless of which xrEndSession() strategy is used --
+     * destroying a session with a frame began-but-not-ended outstanding is
+     * itself invalid per the spec) and skip xrEndSession() entirely,
+     * proceeding straight to xrDestroySession(). vr_run_frame() checks
+     * s_session == XR_NULL_HANDLE (set at the bottom of this function)
+     * immediately after main_loop_iteration() returns and bails out before
+     * touching xrEndFrame() itself, so this is the only xrEndFrame() call
+     * for this tick -- see vr_run_frame() below.
+     *
+     * On the no-frame-open path, this is exactly the pre-existing, already-
+     * correct behavior: the runtime already drove the session to STOPPING,
+     * so xrEndSession() is exactly the call the spec expects here. */
     if (s_session_running) {
-        xrEndSession(s_session);
+        if (s_frame_open) {
+            XrFrameEndInfo empty_frame_end_info = {
+                .type = XR_TYPE_FRAME_END_INFO,
+                .displayTime = s_frame_state.predictedDisplayTime,
+                .environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE,
+                .layerCount = 0,
+                .layers = NULL,
+            };
+            XrResult end_result = xrEndFrame(s_session, &empty_frame_end_info);
+            if (XR_FAILED(end_result)) {
+                fprintf(stderr, "vr_runtime: vr_shutdown(): closing out the still-open frame failed "
+                                 "(XrResult=%d) -- continuing shutdown anyway\n", (int)end_result);
+            }
+            s_frame_open = false;
+            fprintf(stderr, "vr_runtime: vr_shutdown() reached mid-frame (game-initiated quit) -- "
+                             "session is still RUNNING, not STOPPING, so xrEndSession() would be invalid "
+                             "here per the OpenXR spec; skipping it and destroying the session directly "
+                             "instead. A fully spec-clean xrRequestExitSession()+drain-to-STOPPING sequence "
+                             "is left as future work.\n");
+        } else {
+            xrEndSession(s_session);
+        }
     }
     xrDestroySession(s_session);
+    s_session = XR_NULL_HANDLE;
     xrDestroyInstance(s_instance);
+    s_instance = XR_NULL_HANDLE;
+    s_session_running = false;
 }
 
 /* --- Live head tracking + per-eye MVP construction (Phase 2) ------------ */
@@ -659,7 +746,6 @@ void build_mvp_vr_eye(float mvp_out[16],
  * rendered scene to calibrate comfort/IPD settings against. */
 #define VR_EYE_OFFSET_M 0.0315f
 
-static XrFrameState s_frame_state;
 static XrView       s_frame_views[2];
 static bool         s_should_render_this_tick = false;
 
@@ -718,6 +804,12 @@ bool vr_run_frame(void)
 
     XrFrameBeginInfo frame_begin_info = { .type = XR_TYPE_FRAME_BEGIN_INFO };
     if (XR_FAILED(xrBeginFrame(s_session, &frame_begin_info))) return false;
+    /* task-7-round2 New Important 1: marks this frame as open for
+     * vr_shutdown() -- see its own comment and s_frame_open's declaration
+     * above. Cleared below once this function's own xrEndFrame() runs (or
+     * by vr_shutdown() itself, if main_loop_iteration() below reaches it
+     * first). */
+    s_frame_open = true;
 
     s_should_render_this_tick = s_frame_state.shouldRender;
     if (s_should_render_this_tick) {
@@ -741,6 +833,20 @@ bool vr_run_frame(void)
      * s_frame_view_count_for_layer for the xrEndFrame call below. */
     bool keep_running = main_loop_iteration() != 0;
 
+    /* task-7-round2 New Important 1: main_loop_iteration() above can reach
+     * frontend_shutdown_finish() -> vr_shutdown() on this exact tick (the
+     * game-initiated quit path -- see vr_shutdown()'s own comment), which
+     * destroys and NULLs s_session/s_instance (and already closed out THIS
+     * frame itself with its own empty-layer xrEndFrame(), since s_frame_open
+     * was still true when it ran) before returning back up to here. If that
+     * happened, every OpenXR object below is already gone -- calling
+     * xrEndFrame() against a destroyed session is undefined behavior per
+     * the OpenXR spec (no calls are permitted on a destroyed handle) -- so
+     * detect it and bail immediately without touching any OpenXR handle. */
+    if (s_session == XR_NULL_HANDLE) {
+        return false;
+    }
+
     XrCompositionLayerProjection projection_layer = {
         .type = XR_TYPE_COMPOSITION_LAYER_PROJECTION,
         .space = s_local_space,
@@ -757,7 +863,9 @@ bool vr_run_frame(void)
         .layerCount = s_frame_view_count_for_layer > 0 ? 1u : 0u,
         .layers = s_frame_view_count_for_layer > 0 ? submitted_layers : NULL,
     };
-    if (XR_FAILED(xrEndFrame(s_session, &frame_end_info))) return false;
+    XrResult end_result = xrEndFrame(s_session, &frame_end_info);
+    s_frame_open = false;
+    if (XR_FAILED(end_result)) return false;
 
     return keep_running;
 }
@@ -846,6 +954,20 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
          * inside draw_road() itself produces the exact same globals both
          * times and has no other side effect. */
         calculateview(iDriveView, uiViewType, 0);
+        /* task-7-round2 Minor: draw_road()'s own internal calculateview()
+         * call (3d.c draw_road()) is immediately followed by
+         * noclip_camera_apply()/chase_look_apply() -- debug-only "Free
+         * Camera"/noclip overrides that also write the same view-state
+         * globals. Calling them here too keeps base_cam/base_proj below
+         * (read from those globals BEFORE draw_road() runs its own,
+         * redundant calculateview()+override sequence) consistent with what
+         * draw_road() itself will use a few lines down for world-geometry
+         * queueing -- both no-arg, side-effect-only-on-those-globals
+         * functions (view.h), so calling them an extra time here is cheap
+         * and has no effect beyond keeping this eye's MVP override in sync
+         * with normal play. Only affects debug noclip/Free Camera use. */
+        noclip_camera_apply();
+        chase_look_apply();
 
         /* Read the same globals draw_road() itself uses to build its
          * GameRenderCamera/GameRenderProjection (3d.c draw_road(), just
@@ -891,15 +1013,28 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
         }
         XrSwapchainImageWaitInfo wait_info = { .type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO, .timeout = XR_INFINITE_DURATION };
         if (XR_FAILED(xrWaitSwapchainImage(s_swapchains[i], &wait_info))) {
-            /* Same pending-command-buffer leak as above, plus the swapchain
-             * image IS now acquired and must be released or this swapchain
-             * is permanently broken for the rest of the run (OpenXR calls
-             * xrWaitSwapchainImage/xrAcquireSwapchainImage in strict order;
-             * skipping the release desyncs that order) -- task-7-review
-             * Finding 4. */
+            /* Same pending-command-buffer leak as above (task-7-review
+             * Finding 4), plus we still attempt the matching release call
+             * here to keep xrAcquireSwapchainImage/xrWaitSwapchainImage/
+             * xrReleaseSwapchainImage's strict ordering contract intact for
+             * whatever comes next on this swapchain. task-7-round2 Minor:
+             * an earlier version of this comment claimed the release "keeps
+             * the swapchain usable" here, i.e. that it recovers cleanly --
+             * that's not accurate. Per the spec, xrReleaseSwapchainImage is
+             * only valid after a successful xrWaitSwapchainImage; since the
+             * wait above FAILED, no image was actually waited, so this call
+             * is expected to itself fail (XR_ERROR_CALL_ORDER_INVALID) and
+             * do nothing -- it's a best-effort attempt to keep the sequence
+             * from desyncing further, not a real recovery. Logged rather
+             * than assumed, so a genuinely different failure here isn't
+             * silently swallowed. */
             game_render_cancel_frame(g_pGameRenderer);
             XrSwapchainImageReleaseInfo release_info = { .type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-            xrReleaseSwapchainImage(s_swapchains[i], &release_info);
+            XrResult release_result = xrReleaseSwapchainImage(s_swapchains[i], &release_info);
+            if (XR_FAILED(release_result)) {
+                fprintf(stderr, "vr_runtime: xrReleaseSwapchainImage after a failed xrWaitSwapchainImage "
+                                 "also failed as expected (XrResult=%d)\n", (int)release_result);
+            }
             return;
         }
 
