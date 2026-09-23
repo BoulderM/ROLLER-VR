@@ -300,8 +300,9 @@ struct SceneRendererGPU {
     int viewportX, viewportY, viewportW, viewportH;
     int projectionReferenceHeight;
 
-    /* One-shot override of build_mvp()'s computed matrix, consumed by
-     * scene_render_gpu_build_vp(); see scene_render_gpu_set_vr_eye_mvp(). */
+    /* Persist-until-replaced override of build_mvp()'s computed matrix,
+     * consumed (but not cleared) by scene_render_gpu_build_vp(); see
+     * scene_render_gpu_set_vr_eye_mvp() and that function's own comment. */
     bool  vrEyeMvpOverrideSet;
     float vrEyeMvpOverride[16];
 
@@ -856,8 +857,20 @@ static void build_mvp(float mvp[16],
 void scene_render_gpu_build_vp(SceneRendererGPU *r, float vp[16])
 {
     if (r->vrEyeMvpOverrideSet) {
+        /* Persist-until-replaced, NOT one-shot (task-7-review Finding 2):
+         * game_render_hw_draw_car() bakes this function's result into each
+         * car's draw command AT QUEUE TIME (during draw_road()), while
+         * world geometry only reads it back at END-FRAME time (Pass A, see
+         * scene_render_gpu_end_frame_internal). A one-shot override got
+         * consumed by whichever of those ran first, leaving everything
+         * after it back on the flat, non-VR camera. Safe as persist-until-
+         * replaced because vr_present_stereo_frame() (vr_runtime.c) sets a
+         * fresh override via scene_render_gpu_set_vr_eye_mvp() before EACH
+         * eye's own draw_road() call, naturally replacing whatever the
+         * previous eye set -- there's no cross-eye/cross-frame
+         * contamination as long as every VR render sets its own override
+         * before queueing anything, which it does. */
         memcpy(vp, r->vrEyeMvpOverride, sizeof(r->vrEyeMvpOverride));
-        r->vrEyeMvpOverrideSet = false; /* one-shot, like the real spec intended */
         return;
     }
     int vpW = r->viewportW > 0 ? r->viewportW : 640;
@@ -3744,6 +3757,24 @@ SDL_GPUTexture *scene_render_gpu_end_frame_to_vr_eye(SceneRendererGPU *r,
     if (!r || r->window) return NULL; /* VR eyes are windowless renderers only */
     r->viewportW = (int)uiWidth;
     r->viewportH = (int)uiHeight;
+    /* task-7-review Finding 3: scene_render_gpu_end_frame_internal() renders
+     * at viewportW/H * renderScale, not viewportW/H directly -- renderScale
+     * defaults to 1.0 but is user-configurable (RenderScale= in the INI,
+     * rollerinput.c) and can be set to anything >= 0.25. vr_runtime.c's
+     * vkCmdCopyImage call always copies exactly uiWidth x uiHeight (the
+     * requested eye size), so whenever renderScale != 1.0 that copy extent
+     * would be wrong: below 1.0 it reads out of bounds of the actually-
+     * rendered region (a Vulkan validation error and/or garbage pixels),
+     * above 1.0 it only copies the top-left crop of a larger rendered
+     * image. Force it to exactly 1.0 for this windowless VR-eye renderer so
+     * the rendered size always matches uiWidth/uiHeight exactly, keeping
+     * the copy extent correct regardless of the user's desktop RenderScale
+     * setting (which is meaningless for a VR eye target anyway -- OpenXR's
+     * own recommended swapchain size is already the resolution that
+     * matters). Uses the public setter rather than poking r->renderScale
+     * directly to go through its existing clamp logic, even though 1.0f is
+     * always above the 0.25f floor. */
+    scene_render_gpu_set_render_scale(r, 1.0f);
     if (!scene_render_gpu_end_frame(r)) return NULL;
     return scene_render_gpu_get_offscreen_texture(r);
 }

@@ -70,6 +70,12 @@ void game_render_end_frame(GameRenderer *renderer);
 void game_render_set_vr_eye_mvp(GameRenderer *renderer, const float mvp[16]);
 SDL_GPUTexture *game_render_end_frame_to_vr_eye(GameRenderer *renderer, Uint32 uiWidth, Uint32 uiHeight);
 SDL_GPUFence *game_render_get_last_vr_fence(GameRenderer *renderer);
+/* Discards a pending, not-yet-submitted command buffer acquired by
+ * game_render_begin_frame() (e.g. a VR tick that ends up not rendering
+ * anything, or an early-out on an error path partway through a frame),
+ * instead of leaving it dangling. No-op if there is no pending command
+ * buffer. Wraps scene_render_gpu_cancel_frame(). */
+void game_render_cancel_frame(GameRenderer *renderer);
 /* Editor-only synchronous software completion. Converts the native indexed
  * frame directly to top-left RGBA8 and scales with opaque-black letterboxing;
  * it never calls UpdateSDLWindow or simulates a GPU download. */

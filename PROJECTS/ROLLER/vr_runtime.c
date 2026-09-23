@@ -25,6 +25,8 @@
  * already pulls in game_render.h for the game_render_* wrapper calls used
  * below). */
 #include "3d.h"
+#include "roller.h"  /* ROLLERGetGPUDevice() -- see vr_init() below */
+#include "view.h"    /* calculateview() -- see vr_present_stereo_frame() below */
 
 static SDL_GPUDevice *s_gpu;
 static VkInstance s_vk_instance;
@@ -63,15 +65,32 @@ static bool fail_vk(const char *what, VkResult result)
 
 bool vr_init(void)
 {
-    /* --- 1. Create the SDL_GPU device (Vulkan) --- */
-    if (!SDL_Init(SDL_INIT_VIDEO)) {
-        fail(SDL_GetError());
-        return false;
-    }
-
-    s_gpu = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, NULL);
+    /* --- 1. Adopt the game's existing SDL_GPU device (Vulkan) --- */
+    /* task-7-review Finding 1 (Critical): this used to call its own
+     * SDL_CreateGPUDevice() here, creating a SECOND, independent VkDevice
+     * from the one InitSDL()'s VR branch (roller.c) already created for the
+     * game itself (s_pGPUDevice / ROLLERGetGPUDevice()). OpenXR was then
+     * bound to THIS runtime's own device while vr_present_stereo_frame()
+     * went on to wait fences and copy VkImages that actually belonged to
+     * the GAME's device (via game_render_end_frame_to_vr_eye()) using a
+     * queue/command buffer from a DIFFERENT device -- invalid Vulkan usage
+     * (a VkImage/fence from one VkDevice cannot be used in commands
+     * submitted to a different VkDevice's queue). Fixed by adopting the
+     * game's own device instead of creating a second one: OpenXR now binds
+     * to the exact same VkDevice/VkQueue the game renders with, and every
+     * downstream Vulkan call in this file operates on that one shared
+     * device throughout.
+     *
+     * ROLLERGetGPUDevice() is guaranteed non-NULL here because vr_init() is
+     * only ever called from main() (3d.c), immediately after InitSDL()
+     * returns success -- InitSDL()'s g_bVRMode branch is exactly what
+     * creates this device. The NULL check below is a defensive guard
+     * against that call-ordering invariant ever being violated (e.g. by a
+     * future refactor), not an expected runtime path. */
+    s_gpu = ROLLERGetGPUDevice();
     if (!s_gpu) {
-        fail(SDL_GetError());
+        fail("ROLLERGetGPUDevice() returned NULL -- vr_init() must be called after InitSDL() "
+             "has successfully created the game's GPU device");
         return false;
     }
     printf("vr_runtime: SDL_GPU driver: %s\n", SDL_GetGPUDeviceDriver(s_gpu));
@@ -295,6 +314,16 @@ bool vr_init(void)
 
 void vr_shutdown(void)
 {
+    /* s_gpu is the game's own shared GPU device (see vr_init()'s comment
+     * above), not one this runtime owns -- its lifecycle belongs entirely
+     * to InitSDL()/ShutdownSDL() (roller.c). vr_shutdown() must wait for it
+     * to go idle before tearing down the Vulkan objects THIS runtime does
+     * own (the command pool/buffer), but must NOT destroy the device and
+     * must NOT call SDL_Quit(): both belong to ShutdownSDL(), which runs
+     * immediately after this function returns (frontend_shutdown_finish(),
+     * 3d.c) -- the device is still valid here. Calling either here would
+     * destroy/quit out from under ShutdownSDL()'s own subsequent cleanup
+     * (double-free / double-quit). */
     vkDeviceWaitIdle(s_vk_device);
     vkFreeCommandBuffers(s_vk_device, s_command_pool, 1, &s_command_buffer);
     vkDestroyCommandPool(s_vk_device, s_command_pool, NULL);
@@ -309,8 +338,6 @@ void vr_shutdown(void)
     }
     xrDestroySession(s_session);
     xrDestroyInstance(s_instance);
-    SDL_DestroyGPUDevice(s_gpu);
-    SDL_Quit();
 }
 
 /* --- Live head tracking + per-eye MVP construction (Phase 2) ------------ */
@@ -738,9 +765,26 @@ bool vr_run_frame(void)
 void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iDriveView)
 {
     if (!s_should_render_this_tick) {
+        /* The caller (updatescreen()'s g_bVRMode branch) already called
+         * game_render_begin_frame() once for this tick before reaching this
+         * function -- see this function's own calling-convention doc
+         * comment in vr_runtime.h. That acquires an SDL GPU command buffer
+         * that nothing else will ever submit or cancel if we just bail out
+         * here, leaking one SDL command buffer on every tick OpenXR reports
+         * shouldRender == false for (task-7-review Finding 4). Cancel it
+         * explicitly instead of leaving it dangling. */
+        game_render_cancel_frame(g_pGameRenderer);
         s_frame_view_count_for_layer = 0;
         return;
     }
+
+    /* Same view-state globals draw_road() itself reads to build its
+     * GameRenderCamera/GameRenderProjection (3d.c draw_road(), just after
+     * its own calculateview() call -- see the long comment below on why
+     * this function calls calculateview() directly instead of reading them
+     * back via game_render_get_camera()/get_projection()). */
+    extern float viewx, viewy, viewz;
+    extern float vk1, vk2, vk3, vk4, vk5, vk6, vk7, vk8, vk9;
 
     for (Uint32 i = 0; i < s_view_count && i < 2; i++) {
         /* Required before every eye EXCEPT the first: scene_render_gpu_end_
@@ -769,16 +813,56 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
         if (i > 0)
             game_render_begin_frame(g_pGameRenderer);
 
-        /* draw_road() recomputes calculateview()/calculatetransform() fresh
-         * each call and queues this eye's draw list into g_pGameRenderer's
-         * single windowless scene instance -- there are two draw_road()
-         * calls here (one per eye), not two renderer instances. */
-        draw_road(pMainScrPtr, uiViewType, iDriveView, -1, 0);
+        /* --- task-7-review Finding 2 (Important) ---
+         * game_render_hw_draw_car() bakes scene_render_gpu_build_vp()'s
+         * result into each car's draw command AT QUEUE TIME, i.e. during
+         * draw_road()'s own execution -- while world geometry only reads it
+         * back at END-FRAME time (Pass A, scene_render_gpu_end_frame_
+         * internal). Setting the VR-eye override AFTER draw_road() returns
+         * (as this used to) meant cars were already queued with the flat,
+         * non-VR camera by the time the override was set -- only world
+         * geometry got the correct eye view. Fixed by computing this eye's
+         * camera and setting the override BEFORE calling draw_road(), so
+         * it's already active before any car gets queued. (This alone isn't
+         * enough -- see scene_render_gpu_build_vp()'s own comment on why the
+         * override also had to become persist-until-replaced instead of
+         * one-shot; both halves of the fix are required together.)
+         *
+         * calculateview()'s args here exactly match what draw_road() itself
+         * passes it: draw_road() calls calculateview(uiViewMode, iCarIdx,
+         * iChaseCamIdx) using ITS OWN parameter names (3d.c draw_road(),
+         * right after its own signature `draw_road(uint8 *pScrPtr, int
+         * iCarIdx, unsigned int uiViewMode, int iCopyImmediately, int
+         * iChaseCamIdx)`). The draw_road() call below passes (pMainScrPtr,
+         * uiViewType, iDriveView, -1, 0), so within THAT call draw_road's
+         * own iCarIdx == uiViewType and its own uiViewMode == iDriveView --
+         * hence calculateview(iDriveView, uiViewType, 0) here, using this
+         * function's own parameter names. calculateview() only writes to
+         * view-state globals (viewx/viewy/viewz, vk1..vk9, etc.) as a pure
+         * function of Car[] state (verified by reading view.c/transfrm.c:
+         * no Car[] field is ever written, and every global it touches is
+         * fully overwritten -- not accumulated -- from this call's own
+         * inputs each time) -- calling it here and then again, redundantly,
+         * inside draw_road() itself produces the exact same globals both
+         * times and has no other side effect. */
+        calculateview(iDriveView, uiViewType, 0);
 
-        SceneRenderCamera base_cam = {0};
-        SceneRenderProjection base_proj = {0};
-        game_render_get_camera(g_pGameRenderer, &base_cam);       /* read back what draw_road() just set */
-        game_render_get_projection(g_pGameRenderer, &base_proj);
+        /* Read the same globals draw_road() itself uses to build its
+         * GameRenderCamera/GameRenderProjection (3d.c draw_road(), just
+         * after its own calculateview() call) -- NOT game_render_get_
+         * camera()/get_projection(), which read back g_pGameRenderer's
+         * CACHED copy of those structs and would still hold the PREVIOUS
+         * eye's (or previous frame's) values until draw_road() itself runs
+         * a few lines from now and refreshes them. build_mvp_vr_eye() only
+         * reads base_cam->viewX/viewY/viewZ and base_proj->view, so only
+         * those fields are populated here (the rest zero-init and are
+         * unused by it). */
+        SceneRenderCamera base_cam = {
+            .viewX = viewx, .viewY = viewy, .viewZ = viewz,
+        };
+        SceneRenderProjection base_proj = {
+            .view = {{vk1, vk2, vk3}, {vk4, vk5, vk6}, {vk7, vk8, vk9}},
+        };
 
         float eye_mvp[16];
         float eye_sign = (i == 0) ? -1.0f : 1.0f;
@@ -786,11 +870,38 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
                           eye_sign * VR_EYE_OFFSET_M, (int)view_configs_width(i), (int)view_configs_height(i));
         game_render_set_vr_eye_mvp(g_pGameRenderer, eye_mvp);
 
+        /* draw_road() recomputes calculateview()/calculatetransform() fresh
+         * (redundant but harmless, see above) and queues this eye's draw
+         * list into g_pGameRenderer's single windowless scene instance --
+         * there are two draw_road() calls here (one per eye), not two
+         * renderer instances. The VR-eye override set above is now active
+         * BEFORE any of this call's cars are queued. */
+        draw_road(pMainScrPtr, uiViewType, iDriveView, -1, 0);
+
         Uint32 image_index = 0;
         XrSwapchainImageAcquireInfo acquire_info = { .type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
-        if (XR_FAILED(xrAcquireSwapchainImage(s_swapchains[i], &acquire_info, &image_index))) return;
+        if (XR_FAILED(xrAcquireSwapchainImage(s_swapchains[i], &acquire_info, &image_index))) {
+            /* draw_road() above already queued this eye's cars/world
+             * geometry into a command buffer that game_render_end_frame_to_
+             * vr_eye() will now never be called to submit -- cancel it
+             * explicitly (task-7-review Finding 4) rather than leaking it.
+             * No swapchain image was acquired yet, so nothing to release. */
+            game_render_cancel_frame(g_pGameRenderer);
+            return;
+        }
         XrSwapchainImageWaitInfo wait_info = { .type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO, .timeout = XR_INFINITE_DURATION };
-        if (XR_FAILED(xrWaitSwapchainImage(s_swapchains[i], &wait_info))) return;
+        if (XR_FAILED(xrWaitSwapchainImage(s_swapchains[i], &wait_info))) {
+            /* Same pending-command-buffer leak as above, plus the swapchain
+             * image IS now acquired and must be released or this swapchain
+             * is permanently broken for the rest of the run (OpenXR calls
+             * xrWaitSwapchainImage/xrAcquireSwapchainImage in strict order;
+             * skipping the release desyncs that order) -- task-7-review
+             * Finding 4. */
+            game_render_cancel_frame(g_pGameRenderer);
+            XrSwapchainImageReleaseInfo release_info = { .type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+            xrReleaseSwapchainImage(s_swapchains[i], &release_info);
+            return;
+        }
 
         Uint32 xr_image_count = 0;
         xrEnumerateSwapchainImages(s_swapchains[i], 0, &xr_image_count, NULL);
@@ -822,7 +933,18 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
             SDL_WaitForGPUFences(s_gpu, true, &fence, 1);
             SDL_ReleaseGPUFence(s_gpu, fence);
         }
-        if (!resolved) return;
+        /* game_render_end_frame_to_vr_eye() (-> scene_render_gpu_end_frame_
+         * internal) always either submits or internally cancels the pending
+         * command buffer itself before returning, success or failure -- no
+         * separate game_render_cancel_frame() call is needed here regardless
+         * of what `resolved` comes back as. Only the swapchain image
+         * acquired above still needs releasing on this failure path
+         * (task-7-review Finding 4). */
+        if (!resolved) {
+            XrSwapchainImageReleaseInfo release_info = { .type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+            xrReleaseSwapchainImage(s_swapchains[i], &release_info);
+            return;
+        }
 
         SDL_PropertiesID tex_props = SDL_GetGPUTextureProperties(resolved);
         VkImage resolved_vk_image = (VkImage)SDL_GetPointerProperty(
@@ -830,6 +952,8 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
         if (!resolved_vk_image) {
             fprintf(stderr, "vr_runtime: SDL_GetGPUTextureProperties did not expose a VkImage "
                              "for the resolved eye texture (is this the patched SDL fork?)\n");
+            XrSwapchainImageReleaseInfo release_info = { .type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+            xrReleaseSwapchainImage(s_swapchains[i], &release_info);
             return;
         }
 

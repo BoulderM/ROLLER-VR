@@ -410,6 +410,27 @@ static void frontend_shutdown_finish(void)
     save_fatal_config();
 
   //added by ROLLER
+#if defined(ROLLER_VR_BUILD)
+  /* task-7-review Finding 1: vr_shutdown() must run BEFORE ShutdownSDL(),
+   * not "after frontend_run_game_loop() returns" as originally sketched --
+   * verified that ShutdownSDL() itself is called from right here, inside
+   * frontend_shutdown_finish(), which runs as part of the frontend state
+   * machine's SHUTDOWN state while main_loop_iteration()/vr_run_frame() is
+   * STILL being called in frontend_run_game_loop()'s loop (main_loop_
+   * iteration() only returns 0, ending that loop, once the state machine
+   * has already advanced past SHUTDOWN to QUIT -- see main_loop_iteration()
+   * above). Calling vr_shutdown() after the loop returns would run it
+   * after ShutdownSDL() had already destroyed the shared GPU device this
+   * runtime's vkDeviceWaitIdle()/vkFreeCommandBuffers()/vkDestroyCommandPool()
+   * calls need -- a use-after-free of the VkDevice handle. Placing it here,
+   * immediately before ShutdownSDL(), guarantees the device is still valid
+   * when vr_shutdown() tears down the Vulkan/OpenXR objects it owns.
+   * frontend_shutdown_finish()'s own guards above (iFrontendShutdownComplete/
+   * iFrontendShutdownFinishing) already ensure this function's body -- and
+   * so this call -- runs at most once. */
+  if (g_bVRMode)
+    vr_shutdown();
+#endif
   ShutdownSDL();
 
   //clear keyboard buffer
@@ -3113,6 +3134,22 @@ int main(int argc, const char **argv, const char **envp)
   if (InitSDL(whiplash_root, midi_root) != 0) {
     return 1;
   }
+
+#if defined(ROLLER_VR_BUILD)
+  /* task-7-review Finding 1: vr_init()/vr_shutdown() were never called
+   * anywhere -- without this, g_bVRMode would hang forever on vr_run_frame()'s
+   * SDL_Delay(10) wait loop (s_session/s_instance never created). Called
+   * right after InitSDL() succeeds: InitSDL()'s own g_bVRMode branch
+   * (roller.c) is what creates the shared GPU device vr_init() now adopts
+   * (see vr_init()'s own comment in vr_runtime.c), so this is the earliest
+   * point that device is guaranteed to exist. */
+  if (g_bVRMode) {
+    if (!vr_init()) {
+      ErrorBoxExit("Couldn't initialize VR runtime");
+      return 1;
+    }
+  }
+#endif
 
   if (!g_bSnapshotMode) {
     // The CD-image extraction prompt, replays directory bootstrap, and audio

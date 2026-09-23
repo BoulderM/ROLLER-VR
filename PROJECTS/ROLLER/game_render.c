@@ -285,6 +285,11 @@ SDL_GPUFence *game_render_get_last_vr_fence(GameRenderer *renderer) {
     return scene_render_gpu_get_last_fence(renderer->gpu);
 }
 
+void game_render_cancel_frame(GameRenderer *renderer) {
+    if (!renderer || !renderer->gpu) return;
+    scene_render_gpu_cancel_frame(renderer->gpu);
+}
+
 bool game_render_end_frame_software_readback(
     GameRenderer *renderer,
     const uint8 *pbyIndexedPixels,

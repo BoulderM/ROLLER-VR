@@ -59,10 +59,15 @@ void scene_render_gpu_set_viewport(SceneRendererGPU *r,
 void scene_render_gpu_set_projection_reference_height(SceneRendererGPU *r,
                                                        int height);
 
-/* Overrides build_mvp()'s computed matrix for the next end-frame call only
- * (auto-clears after use). Used by VR to substitute a head-tracked, eye-
- * offset MVP in place of the normal single camera. NULL/never-called means
- * normal (non-VR) behavior is completely unaffected. */
+/* Overrides build_mvp()'s computed matrix, persisting until the next call to
+ * this function replaces it (NOT auto-cleared -- see scene_render_gpu_
+ * build_vp()'s own comment for why: cars consume it at queue time, world
+ * geometry at end-frame time, so a one-shot override could get consumed by
+ * whichever ran first). Used by VR to substitute a head-tracked, eye-offset
+ * MVP in place of the normal single camera; the caller (vr_present_stereo_
+ * frame(), vr_runtime.c) sets a fresh override before each eye's own
+ * draw_road() call. NULL/never-called means normal (non-VR) behavior is
+ * completely unaffected. */
 void scene_render_gpu_set_vr_eye_mvp(SceneRendererGPU *r, const float mvp[16]);
 
 /* Returns the resolved offscreen colour target (post 3D/signs/HUD, pre-blit)
@@ -88,11 +93,16 @@ void scene_render_gpu_set_camera(SceneRendererGPU *r,
 void scene_render_gpu_set_projection(SceneRendererGPU *r,
                                      const SceneRenderProjection *proj);
 
-/* VR read-back counterparts to set_camera/set_projection above -- same
- * struct-copy shape, opposite direction. Used by vr_present_stereo_frame
- * (vr_runtime.c, via game_render_get_camera/get_projection) to read back
- * whatever draw_road() just set for the current eye via the setters above,
- * before composing that eye's head-tracked VR MVP override on top of it. */
+/* Read-back counterparts to set_camera/set_projection above -- same
+ * struct-copy shape, opposite direction. Exposed via game_render_get_camera/
+ * get_projection (game_render.h). NOT used by vr_present_stereo_frame
+ * (vr_runtime.c) as of task-7-review Finding 2's fix: that function needs
+ * the CURRENT eye's camera before draw_road() has run (so it can set the
+ * VR-eye MVP override before draw_road() queues any cars), and these
+ * getters only return whatever the PREVIOUS draw_road() call last set via
+ * the setters above -- so it reads the same underlying view-state globals
+ * (viewx/viewy/viewz, vk1..vk9) directly instead. Kept for other potential
+ * callers/tooling that do want a post-draw_road() read-back. */
 void scene_render_gpu_get_camera(const SceneRendererGPU *r,
                                  SceneRenderCamera *cam);
 void scene_render_gpu_get_projection(const SceneRendererGPU *r,
