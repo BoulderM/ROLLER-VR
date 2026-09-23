@@ -377,6 +377,59 @@ static void quat_to_mat3(const XrQuaternionf *q, float m[3][3])
     m[2][0] =     2 * (x * z - y * w); m[2][1] =     2 * (y * z + x * w); m[2][2] = 1 - 2 * (x * x + y * y);
 }
 
+/* --- 3x3 matrix helpers for the head-pose composition below --------------
+ * (naive [row][col] array reads throughout, matching quat_to_mat3's own
+ * convention -- these are NOT aware of proj->view's [col][row] storage
+ * quirk; that translation happens once, explicitly, where base_rot is
+ * read out of base_proj->view below). */
+static void mat3_transpose(const float src[3][3], float dst[3][3])
+{
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++)
+            dst[r][c] = src[c][r];
+}
+
+static void mat3_mul(const float a[3][3], const float b[3][3], float out[3][3])
+{
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++) {
+            float sum = 0.0f;
+            for (int k = 0; k < 3; k++) sum += a[r][k] * b[k][c];
+            out[r][c] = sum;
+        }
+}
+
+/* Left-multiplies by S = diag(1, 1, -1) -- negates row 2 only, leaves rows
+ * 0/1 unchanged. S is its own inverse (S*S = I). It converts between
+ * OpenXR's local/reference-space axis convention (-Z forward, matching the
+ * eye/view-space convention the kept projection matrix below expects) and
+ * the game's own +Z-forward convention (R_true/base_rot, vk1..vk9) -- both
+ * are right-handed, +X right/+Y up, and differ only in which way Z points,
+ * so a single-axis flip is the full, exact conversion between them. */
+static void mat3_flip_row2(const float src[3][3], float dst[3][3])
+{
+    dst[0][0] = src[0][0]; dst[0][1] = src[0][1]; dst[0][2] = src[0][2];
+    dst[1][0] = src[1][0]; dst[1][1] = src[1][1]; dst[1][2] = src[1][2];
+    dst[2][0] = -src[2][0]; dst[2][1] = -src[2][1]; dst[2][2] = -src[2][2];
+}
+
+/* OpenXR reports positions/IPD in meters; ROLLER's world units are a much
+ * smaller, unlabeled scale (SCENE_GPU_NEAR/FAR in scene_render_gpu.h are
+ * 10.0f/20000000.0f world units, and menu_render_gpu.c's track-overview
+ * camera sits "hundreds of thousands of world units" from the track --
+ * both say world units are far finer-grained than a meter). No numeric
+ * world-unit-per-meter constant exists anywhere else in this codebase
+ * (checked for CAR_WIDTH/TRACK_WIDTH/scale-factor style constants; the
+ * only related quantities, e.g. fTrackHalfWidth, are per-track data, not
+ * fixed constants) to anchor a derived value against. This is therefore a
+ * PLACEHOLDER -- pick something in the right ballpark (1 world unit = 1cm
+ * is a common engine convention) and revisit once there's an actual
+ * rendered VR scene to eyeball against a known real-world reference (e.g.
+ * seated eye height in the cockpit). Applied to every meter-scale quantity
+ * below (head position delta, IPD offset, near plane) before it's combined
+ * with world-unit camera state. */
+#define VR_METERS_TO_WORLD 100.0f
+
 void build_mvp_vr_eye(float mvp_out[16],
                        const SceneRenderCamera *base_cam,
                        const SceneRenderProjection *base_proj,
@@ -392,9 +445,10 @@ void build_mvp_vr_eye(float mvp_out[16],
      * Equivalently, reading base_rot the "naive" way -- base_rot[i][j] as
      * plain [row][col] -- gives R_true's TRANSPOSE, i.e. the cockpit's own
      * LOCAL-TO-WORLD orientation matrix (column j = the cockpit's local
-     * axis j expressed in world space). This was cross-checked three ways
-     * against the existing codebase before relying on it: (1) build_mvp()'s
-     * own view-col-row storage-convention comment and its tx/ty/tz translation
+     * axis j expressed in world space), here called V to match the
+     * derivation below. This was cross-checked three ways against the
+     * existing codebase before relying on it: (1) build_mvp()'s own
+     * view-col-row storage-convention comment and its tx/ty/tz translation
      * formula, (2) the per-vertex world->camera transform used pervasively
      * elsewhere (car.c/horizon.c/drawtrk3.c/tower.c: viewX = dx*vk1 +
      * dy*vk4 + dz*vk7, i.e. R_true's row 0 is (vk1,vk4,vk7), NOT the
@@ -402,70 +456,107 @@ void build_mvp_vr_eye(float mvp_out[16],
      * uses for an unrelated one-off calculation), and (3) the existing
      * "camera forward in world X/Y/Z" extraction at scene_render_gpu.c
      * (proj.view[0][2], proj.view[1][2], proj.view[2][2] == vk3,vk6,vk9).
-     * All three agree with base_rot-naive-read == cockpit-local-to-world. */
-    float base_rot[3][3];
+     * All three agree with base_rot-naive-read == cockpit-local-to-world
+     * == V, and that V's forward column (col 2, +Z) is the game's own
+     * +Z-forward convention.
+     *
+     * --- The composition (fixed after task review found two Critical bugs
+     * in an earlier version of this function: the kept projection below
+     * assumes a -Z-forward eye space, per OpenXR/GL convention, but this
+     * function was feeding it rotations built directly out of V/head_rot
+     * with no conversion out of the game's +Z-forward convention and no
+     * conversion out of OpenXR's own -Z-forward reference-space axes --
+     * net effect: nothing rendered in front of the viewer, and head
+     * yaw/pitch came out inverted where it did render) ---
+     *
+     * Let S = diag(1, 1, -1) (mat3_flip_row2 below) -- the axis flip that
+     * converts between OpenXR's -Z-forward convention and the game's
+     * +Z-forward convention (both share the same +X-right/+Y-up axes).
+     * Let R_true = transpose(V) = the game's own world-to-camera matrix
+     * (+Z forward). Let H = head_rot = quat_to_mat3(xr_view->pose.orientation),
+     * the head's LOCAL-TO-REFERENCE-SPACE orientation (both the head's own
+     * local axes and the reference space's axes are OpenXR-native, i.e.
+     * -Z-forward). Then, chasing world -> cockpit -> reference-space ->
+     * head-local through each conversion in turn:
+     *
+     *   world -> cockpit(+Z fwd):        R_true
+     *   cockpit(+Z fwd) -> ref-space(-Z fwd, same physical axes): S (S^-1 == S)
+     *   ref-space -> head-local:          H^T   (H is local-to-base, so
+     *                                             base-to-local is H's
+     *                                             transpose/inverse)
+     *
+     *   combined_rot = H^T * S * R_true
+     *
+     * This is WORLD-TO-EYE, expressed in the eye's own OpenXR-native
+     * (-Z-forward) axes -- exactly the eye-space convention the kept
+     * projection matrix below (mvp[11] = -1, i.e. w = -z_eye) expects, so
+     * no further conversion is needed after this. Sanity-checked by hand
+     * for the identity-head-pose case (H = I): combined_rot reduces to
+     * S * R_true, and combined_rot^T * (0,0,-1) == V's own forward column
+     * (R_true's own world-forward direction) -- i.e. with the head
+     * perfectly still, whatever the base non-VR camera would put at
+     * screen-center still lands at the eye's -Z (screen-center) direction.
+     * Re-derived independently (not copied from a spec) and re-verified
+     * numerically for identity, yaw-left-30 deg, and pitch-up-30 deg cases
+     * in vr_mvp_math_test.c (committed alongside this fix). */
+    float base_rot[3][3]; /* V, cockpit local-to-world */
     memcpy(base_rot, base_proj->view, sizeof(base_rot));
 
-    /* head_rot, naive read, is likewise a LOCAL-TO-BASE(reference-space)
-     * orientation matrix (see quat_to_mat3's own comment) -- so base_rot
-     * and head_rot are directly comparable/composable as ordinary
-     * local-to-world orientation matrices below. */
+    float r_true[3][3]; /* R_true = V^T, game's own +Z-forward world-to-camera */
+    mat3_transpose(base_rot, r_true);
+
+    /* head_rot, naive read, is H: the head's LOCAL-TO-REFERENCE-SPACE
+     * orientation matrix (see quat_to_mat3's own comment), both frames in
+     * OpenXR's native -Z-forward convention. */
     float head_rot[3][3];
     quat_to_mat3(&xr_view->pose.orientation, head_rot);
 
-    /* Combined EYE local-to-world orientation: the head's own rotation,
-     * applied first (to a vector in head-local space), then carried into
-     * world space by the cockpit's own orientation -- eye_orient = R_cam *
-     * R_head. This is an ordinary matrix product because both operands are
-     * already in matching local-to-world form (naive [row][col] reads). */
-    float eye_orient[3][3];
-    for (int r = 0; r < 3; r++)
-        for (int c = 0; c < 3; c++) {
-            float sum = 0.0f;
-            for (int k = 0; k < 3; k++) sum += base_rot[r][k] * head_rot[k][c];
-            eye_orient[r][c] = sum;
-        }
+    float head_rot_T[3][3];
+    mat3_transpose(head_rot, head_rot_T);
 
-    /* build_mvp()'s output convention needs a WORLD-TO-EYE rotation stored
-     * the same way proj->view stores R_true (naive [row][col] read ==
-     * R_true, per the derivation above) -- i.e. combined_rot's naive read
-     * must be eye_orient's TRANSPOSE (world-to-eye is the inverse of the
-     * eye's own local-to-world orientation, exactly mirroring how
-     * build_mvp()'s R_true is proj->view's transpose). Composing
-     * head_rot*base_rot directly (skipping this transpose+order step) would
-     * silently produce a different, still-orthonormal-looking but wrong
-     * rotation -- easy to get backwards, so this is spelled out as an
-     * explicit transpose rather than folded into the product above. */
+    float s_r_true[3][3]; /* S * R_true */
+    mat3_flip_row2(r_true, s_r_true);
+
+    /* combined_rot = H^T * S * R_true -- see the derivation above. Stored
+     * naive [row][col], matching proj->view's own R_true convention, which
+     * is exactly what the view-matrix assembly below (and build_mvp()'s
+     * own convention) expects. */
     float combined_rot[3][3];
-    for (int r = 0; r < 3; r++)
-        for (int c = 0; c < 3; c++)
-            combined_rot[r][c] = eye_orient[c][r];
+    mat3_mul(head_rot_T, s_r_true, combined_rot);
 
-    /* Eye offset along the COMBINED eye's local right axis (column 0 of
-     * eye_orient -- the head's local +X after both the head's own rotation
-     * and the cockpit's current world heading are applied), not head_rot's
-     * right axis in isolation: the latter would ignore the car's heading
-     * entirely and only be correct while the car faces the reference
-     * space's own +Z. Likewise, OpenXR's per-eye pose position is reported
-     * in the same cockpit-anchored reference space as the orientation, so
-     * it must be rotated into world space by base_rot before being added to
-     * the car's world position -- otherwise a head-tracked position delta
-     * of a few cm would rotate with the reference space instead of the car
-     * whenever the car turns. */
-    float right_world[3], head_pos_world[3];
-    float head_pos_local[3] = {
+    /* Eye offset along the COMBINED eye's local right axis, and the head's
+     * tracked position delta, both need the SAME world -> ref-space chain
+     * as the orientation above, just run forward instead of inverted:
+     * ref-space/head-local coordinates -> S -> cockpit-frame numbering ->
+     * V -> world. (Column 0 of a local-to-base matrix is that frame's own
+     * local +X expressed in base coordinates -- so column 0 of V*S*H is
+     * the head's local right axis, after both the head's own rotation and
+     * the cockpit's current world heading are applied, expressed in world
+     * coordinates -- not head_rot's right axis in isolation, which would
+     * ignore the car's heading entirely and only be correct while the car
+     * faces the reference space's own reference direction.) Both
+     * quantities are OpenXR meters, so both are scaled by
+     * VR_METERS_TO_WORLD before joining the world-unit camera position. */
+    float s_head_rot[3][3]; /* S * H */
+    mat3_flip_row2(head_rot, s_head_rot);
+    float v_s_h[3][3]; /* V * S * H */
+    mat3_mul(base_rot, s_head_rot, v_s_h);
+    float right_world[3] = { v_s_h[0][0], v_s_h[1][0], v_s_h[2][0] };
+
+    float p_xr[3] = {
         xr_view->pose.position.x, xr_view->pose.position.y, xr_view->pose.position.z
     };
-    for (int r = 0; r < 3; r++) {
-        right_world[r]    = eye_orient[r][0];
-        head_pos_world[r] = base_rot[r][0] * head_pos_local[0]
-                           + base_rot[r][1] * head_pos_local[1]
-                           + base_rot[r][2] * head_pos_local[2];
-    }
+    float s_p_xr[3] = { p_xr[0], p_xr[1], -p_xr[2] }; /* S * p_xr */
+    float head_pos_world[3];
+    for (int r = 0; r < 3; r++)
+        head_pos_world[r] = (base_rot[r][0] * s_p_xr[0]
+                            + base_rot[r][1] * s_p_xr[1]
+                            + base_rot[r][2] * s_p_xr[2]) * VR_METERS_TO_WORLD;
 
-    float eye_x = base_cam->viewX + head_pos_world[0] + right_world[0] * eye_offset_m;
-    float eye_y = base_cam->viewY + head_pos_world[1] + right_world[1] * eye_offset_m;
-    float eye_z = base_cam->viewZ + head_pos_world[2] + right_world[2] * eye_offset_m;
+    float eye_offset_world = eye_offset_m * VR_METERS_TO_WORLD;
+    float eye_x = base_cam->viewX + head_pos_world[0] + right_world[0] * eye_offset_world;
+    float eye_y = base_cam->viewY + head_pos_world[1] + right_world[1] * eye_offset_world;
+    float eye_z = base_cam->viewZ + head_pos_world[2] + right_world[2] * eye_offset_world;
 
     /* Asymmetric perspective from the OpenXR-reported per-eye FOV -- this is
      * the one place VR genuinely needs a different projection construction
@@ -474,10 +565,21 @@ void build_mvp_vr_eye(float mvp_out[16],
     float tan_right = tanf(xr_view->fov.angleRight);
     float tan_up = tanf(xr_view->fov.angleUp);
     float tan_down = tanf(xr_view->fov.angleDown);
-    float near_plane = 0.05f;  /* 5cm -- tighter than SCENE_GPU_NEAR's 10.0f world-unit
-                                 default, revisited in Phase 3 comfort tuning */
-    float far_plane = 100000.0f;
+    float near_plane_m = 0.05f;  /* 5cm, a typical VR near plane in real-world terms */
+    float near_plane = near_plane_m * VR_METERS_TO_WORLD;  /* world units -- with the
+                                 VR_METERS_TO_WORLD placeholder this comes out to 5.0,
+                                 tighter than SCENE_GPU_NEAR's 10.0f world-unit non-VR
+                                 default, as intended; revisit alongside VR_METERS_TO_WORLD
+                                 in Phase 3 comfort tuning once both can be calibrated
+                                 against an actual rendered scene */
+    float far_plane = 100000.0f;  /* already a world-unit quantity (not meters) -- same
+                                 order of magnitude as the game's own track-overview
+                                 camera distances, no conversion needed */
 
+    /* mvp[11] = -1 below (w = -z_eye) assumes a -Z-forward eye space, which is exactly
+     * what combined_rot now produces (see its derivation above) -- this asymmetric-FOV
+     * block itself is otherwise unchanged from the original draft, since the only real
+     * bug here was combined_rot feeding it a +Z-forward rotation. */
     float mvp[16] = {0};
     mvp[0] = 2.0f / (tan_right - tan_left);
     mvp[8] = (tan_right + tan_left) / (tan_right - tan_left);
@@ -487,6 +589,14 @@ void build_mvp_vr_eye(float mvp_out[16],
     mvp[10] = far_plane / (near_plane - far_plane);
     mvp[11] = -1.0f;
     mvp[14] = (far_plane * near_plane) / (near_plane - far_plane);
+
+    /* build_mvp()'s shift_y correction (scene_render_gpu.c) re-centers the horizon to
+     * match the legacy SW rasterizer's fixed 199-row convention -- a non-VR-only concern
+     * (matching the original game's pixel-exact HUD/horizon placement). VR has no such
+     * legacy-parity requirement, and the asymmetric FOV above (tan_up/tan_down from
+     * xr_view->fov) already encodes whatever vertical offset the HMD's own lenses need
+     * -- stacking shift_y on top would double-apply a vertical offset. Deliberately not
+     * applied here. */
 
     /* Fold the combined rotation + eye-position translation into a view
      * matrix, then multiply by the projection built above -- same
