@@ -16,6 +16,7 @@
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -305,4 +306,207 @@ void vr_shutdown(void)
     xrDestroyInstance(s_instance);
     SDL_DestroyGPUDevice(s_gpu);
     SDL_Quit();
+}
+
+/* --- Live head tracking + per-eye MVP construction (Phase 2) ------------ */
+
+/* Pure branch logic extracted out of vr_locate_views() so it can be unit-
+ * tested without a real OpenXR session (no headset is attached to
+ * fatal-gpu, so real tracking-loss can't be triggered on demand). */
+static bool vr_pose_is_usable(XrViewStateFlags flags)
+{
+    return (flags & (XR_VIEW_STATE_POSITION_VALID_BIT | XR_VIEW_STATE_ORIENTATION_VALID_BIT))
+           == (XR_VIEW_STATE_POSITION_VALID_BIT | XR_VIEW_STATE_ORIENTATION_VALID_BIT);
+}
+
+static XrView s_last_good_views[2];
+static bool   s_have_last_good_views = false;
+
+bool vr_locate_views(XrTime predicted_display_time, XrView out_views[2])
+{
+    XrViewLocateInfo locate_info = {
+        .type = XR_TYPE_VIEW_LOCATE_INFO,
+        .viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
+        .displayTime = predicted_display_time,
+        .space = s_local_space,
+    };
+    XrViewState view_state = { .type = XR_TYPE_VIEW_STATE };
+    XrView views[2] = { { .type = XR_TYPE_VIEW }, { .type = XR_TYPE_VIEW } };
+    Uint32 out_count = 0;
+    XrResult xr_result = xrLocateViews(s_session, &locate_info, &view_state, 2, &out_count, views);
+    if (XR_FAILED(xr_result) || out_count < 2) {
+        fprintf(stderr, "vr_runtime: xrLocateViews failed or returned <2 views (XrResult=%d, count=%u)\n",
+                (int)xr_result, out_count);
+        if (!s_have_last_good_views) return false;
+        memcpy(out_views, s_last_good_views, sizeof(s_last_good_views));
+        return true;
+    }
+
+    if (!vr_pose_is_usable(view_state.viewStateFlags)) {
+        if (!s_have_last_good_views) {
+            /* No prior good pose to fall back to yet (e.g. very first frame) --
+             * use identity, matching Phase 1's original placeholder pose,
+             * rather than feeding an explicitly-invalid pose downstream. */
+            for (int i = 0; i < 2; i++) {
+                out_views[i] = (XrView){ .type = XR_TYPE_VIEW, .pose = { .orientation = { .w = 1.0f } } };
+            }
+            return true;
+        }
+        memcpy(out_views, s_last_good_views, sizeof(s_last_good_views));
+        return true;
+    }
+
+    memcpy(out_views, views, sizeof(views));
+    memcpy(s_last_good_views, views, sizeof(views));
+    s_have_last_good_views = true;
+    return true;
+}
+
+/* Standard quaternion-to-rotation-matrix conversion (m[row][col], naive
+ * array read = standard math convention). For a quaternion q that rotates
+ * "local" space into some base/reference space -- which is exactly what
+ * OpenXR's XrPosef.orientation is defined to do (XrView.pose is relative to
+ * the space passed to xrLocateViews, here s_local_space) -- the resulting
+ * matrix m is the LOCAL-TO-BASE orientation matrix: column j of m (varying
+ * row, fixed col) is local axis j expressed in base-space coordinates. */
+static void quat_to_mat3(const XrQuaternionf *q, float m[3][3])
+{
+    float x = q->x, y = q->y, z = q->z, w = q->w;
+    m[0][0] = 1 - 2 * (y * y + z * z); m[0][1] =     2 * (x * y - z * w); m[0][2] =     2 * (x * z + y * w);
+    m[1][0] =     2 * (x * y + z * w); m[1][1] = 1 - 2 * (x * x + z * z); m[1][2] =     2 * (y * z - x * w);
+    m[2][0] =     2 * (x * z - y * w); m[2][1] =     2 * (y * z + x * w); m[2][2] = 1 - 2 * (x * x + y * y);
+}
+
+void build_mvp_vr_eye(float mvp_out[16],
+                       const SceneRenderCamera *base_cam,
+                       const SceneRenderProjection *base_proj,
+                       const XrView *xr_view,
+                       float eye_offset_m,
+                       int vpW, int vpH)
+{
+    /* base_rot is a raw copy of base_proj->view -- the vk1..vk9 basis
+     * calculateview()/calculatetransform() computed this frame, unchanged
+     * from the existing non-VR camera. scene_render_gpu.c's build_mvp()
+     * documents this array as "view[col][row]": the true world-to-camera
+     * rotation matrix R_true satisfies R_true[row][col] == view[col][row].
+     * Equivalently, reading base_rot the "naive" way -- base_rot[i][j] as
+     * plain [row][col] -- gives R_true's TRANSPOSE, i.e. the cockpit's own
+     * LOCAL-TO-WORLD orientation matrix (column j = the cockpit's local
+     * axis j expressed in world space). This was cross-checked three ways
+     * against the existing codebase before relying on it: (1) build_mvp()'s
+     * own view-col-row storage-convention comment and its tx/ty/tz translation
+     * formula, (2) the per-vertex world->camera transform used pervasively
+     * elsewhere (car.c/horizon.c/drawtrk3.c/tower.c: viewX = dx*vk1 +
+     * dy*vk4 + dz*vk7, i.e. R_true's row 0 is (vk1,vk4,vk7), NOT the
+     * (vk1,vk2,vk3) grouping transfrm.c's local-track-chunk position setup
+     * uses for an unrelated one-off calculation), and (3) the existing
+     * "camera forward in world X/Y/Z" extraction at scene_render_gpu.c
+     * (proj.view[0][2], proj.view[1][2], proj.view[2][2] == vk3,vk6,vk9).
+     * All three agree with base_rot-naive-read == cockpit-local-to-world. */
+    float base_rot[3][3];
+    memcpy(base_rot, base_proj->view, sizeof(base_rot));
+
+    /* head_rot, naive read, is likewise a LOCAL-TO-BASE(reference-space)
+     * orientation matrix (see quat_to_mat3's own comment) -- so base_rot
+     * and head_rot are directly comparable/composable as ordinary
+     * local-to-world orientation matrices below. */
+    float head_rot[3][3];
+    quat_to_mat3(&xr_view->pose.orientation, head_rot);
+
+    /* Combined EYE local-to-world orientation: the head's own rotation,
+     * applied first (to a vector in head-local space), then carried into
+     * world space by the cockpit's own orientation -- eye_orient = R_cam *
+     * R_head. This is an ordinary matrix product because both operands are
+     * already in matching local-to-world form (naive [row][col] reads). */
+    float eye_orient[3][3];
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++) {
+            float sum = 0.0f;
+            for (int k = 0; k < 3; k++) sum += base_rot[r][k] * head_rot[k][c];
+            eye_orient[r][c] = sum;
+        }
+
+    /* build_mvp()'s output convention needs a WORLD-TO-EYE rotation stored
+     * the same way proj->view stores R_true (naive [row][col] read ==
+     * R_true, per the derivation above) -- i.e. combined_rot's naive read
+     * must be eye_orient's TRANSPOSE (world-to-eye is the inverse of the
+     * eye's own local-to-world orientation, exactly mirroring how
+     * build_mvp()'s R_true is proj->view's transpose). Composing
+     * head_rot*base_rot directly (skipping this transpose+order step) would
+     * silently produce a different, still-orthonormal-looking but wrong
+     * rotation -- easy to get backwards, so this is spelled out as an
+     * explicit transpose rather than folded into the product above. */
+    float combined_rot[3][3];
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++)
+            combined_rot[r][c] = eye_orient[c][r];
+
+    /* Eye offset along the COMBINED eye's local right axis (column 0 of
+     * eye_orient -- the head's local +X after both the head's own rotation
+     * and the cockpit's current world heading are applied), not head_rot's
+     * right axis in isolation: the latter would ignore the car's heading
+     * entirely and only be correct while the car faces the reference
+     * space's own +Z. Likewise, OpenXR's per-eye pose position is reported
+     * in the same cockpit-anchored reference space as the orientation, so
+     * it must be rotated into world space by base_rot before being added to
+     * the car's world position -- otherwise a head-tracked position delta
+     * of a few cm would rotate with the reference space instead of the car
+     * whenever the car turns. */
+    float right_world[3], head_pos_world[3];
+    float head_pos_local[3] = {
+        xr_view->pose.position.x, xr_view->pose.position.y, xr_view->pose.position.z
+    };
+    for (int r = 0; r < 3; r++) {
+        right_world[r]    = eye_orient[r][0];
+        head_pos_world[r] = base_rot[r][0] * head_pos_local[0]
+                           + base_rot[r][1] * head_pos_local[1]
+                           + base_rot[r][2] * head_pos_local[2];
+    }
+
+    float eye_x = base_cam->viewX + head_pos_world[0] + right_world[0] * eye_offset_m;
+    float eye_y = base_cam->viewY + head_pos_world[1] + right_world[1] * eye_offset_m;
+    float eye_z = base_cam->viewZ + head_pos_world[2] + right_world[2] * eye_offset_m;
+
+    /* Asymmetric perspective from the OpenXR-reported per-eye FOV -- this is
+     * the one place VR genuinely needs a different projection construction
+     * than build_mvp()'s symmetric FOV, since HMD lenses are rarely centered. */
+    float tan_left = tanf(xr_view->fov.angleLeft);
+    float tan_right = tanf(xr_view->fov.angleRight);
+    float tan_up = tanf(xr_view->fov.angleUp);
+    float tan_down = tanf(xr_view->fov.angleDown);
+    float near_plane = 0.05f;  /* 5cm -- tighter than SCENE_GPU_NEAR's 10.0f world-unit
+                                 default, revisited in Phase 3 comfort tuning */
+    float far_plane = 100000.0f;
+
+    float mvp[16] = {0};
+    mvp[0] = 2.0f / (tan_right - tan_left);
+    mvp[8] = (tan_right + tan_left) / (tan_right - tan_left);
+    mvp[5] = 2.0f / (tan_up - tan_down);   /* shadercross's single Y-negation still applies downstream --
+                                              see build_mvp()'s own comment on this, unchanged here */
+    mvp[9] = (tan_up + tan_down) / (tan_up - tan_down);
+    mvp[10] = far_plane / (near_plane - far_plane);
+    mvp[11] = -1.0f;
+    mvp[14] = (far_plane * near_plane) / (near_plane - far_plane);
+
+    /* Fold the combined rotation + eye-position translation into a view
+     * matrix, then multiply by the projection built above -- same
+     * translate-by-(-R*eye) convention build_mvp() already uses. */
+    float view[16] = {0};
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++)
+            view[c * 4 + r] = combined_rot[r][c];
+    view[15] = 1.0f;
+    view[12] = -(combined_rot[0][0] * eye_x + combined_rot[0][1] * eye_y + combined_rot[0][2] * eye_z);
+    view[13] = -(combined_rot[1][0] * eye_x + combined_rot[1][1] * eye_y + combined_rot[1][2] * eye_z);
+    view[14] = -(combined_rot[2][0] * eye_x + combined_rot[2][1] * eye_y + combined_rot[2][2] * eye_z);
+
+    for (int c = 0; c < 4; c++)
+        for (int r = 0; r < 4; r++) {
+            float sum = 0.0f;
+            for (int k = 0; k < 4; k++) sum += mvp[k * 4 + r] * view[c * 4 + k];
+            mvp_out[c * 4 + r] = sum;
+        }
+    (void)vpW; (void)vpH; /* reserved for Phase 3 comfort/resolution tuning, unused here --
+                             scene_render_gpu_set_projection_reference_height already
+                             handles the resolution-mismatch case per the design spec */
 }
