@@ -9,7 +9,17 @@
             .hash = "SDL_image-3.2.4--aJoHb8WAACjnDQ_-PhUi-MNh_mYFODwxANtvY3F-yLe",
         },
         .sdl = .{
+            .url = "git+https://github.com/Zizin13/SDL#c8789580c0f4f0b1bdc268ab5c52082864f3e2a8",
+            .hash = "sdl-0.3.0+3.2.22-7uIn9Is4fwGyNwHnYNTLnZP1WBhWxa5V2WS34x9X_jm8",
+        },
+        // Patched SDL fork used only by `zig build -Dvr` (adds SDL_GetGPUDeviceProperties /
+        // SDL_GetGPUTextureProperties so OpenXR can bind to SDL_GPU's Vulkan device). Lazy, so
+        // a plain build never resolves it. Still a host-local path (symlink to /root/sdl-vr-fork
+        // on the dev LXC, no integrity hash) until the fork has a real remote; -Dvr builds
+        // only work where that path exists.
+        .sdl_vr = .{
             .path = "external/sdl-vr-fork",
+            .lazy = true,
         },
         .wildmidi = .{
             .url = "git+https://github.com/deevus/wildmidi#4cdc96129d59ee7fc81cf160dc13e0625be77fba",

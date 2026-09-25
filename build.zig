@@ -293,7 +293,7 @@ pub fn build(b: *std.Build) void {
             .root_module = vr_exe_mod,
         });
         configureDesktopPlatform(b, vr_exe, vr_exe_mod, target, c_flags);
-        configureDependencies(b, vr_exe, target, optimize, false, false, null, "", "", false);
+        configureDependencies(b, vr_exe, target, optimize, false, false, null, "", "", false, true);
         switch (target.result.os.tag) {
             .windows => {
                 // OpenXR SDK loader .lib is expected at OPENXR_SDK_PATH\lib\openxr_loader.lib
@@ -337,7 +337,8 @@ pub fn build(b: *std.Build) void {
         exe.step.dependOn(&scene_render_seam_check.step);
     }
 
-    configureDependencies(b, exe, target, optimize, bAndroid, bWasm, android_libc_file, sdl_android_include, sdl_android_lib, true);
+    // Under -Dvr the plain `roller` shares the patched SDL with `roller-vr` (one SDL build).
+    configureDependencies(b, exe, target, optimize, bAndroid, bWasm, android_libc_file, sdl_android_include, sdl_android_lib, true, build_vr);
 
     if (!bWasm)
         configureWebBuild(b, optimize);
@@ -1594,6 +1595,14 @@ fn configureDesktopPlatform(
     }
 }
 
+/// SDL package the game links against: the pinned Zizin13/SDL (`.sdl`) by default, the
+/// patched VR fork (`.sdl_vr`) under -Dvr. `.sdl_vr` is a lazy dependency so a plain build
+/// never resolves it; null means it still has to be resolved and the build will restart.
+fn sdlDependency(b: *Build, use_vr_fork: bool, args: anytype) ?*Build.Dependency {
+    if (use_vr_fork) return b.lazyDependency("sdl_vr", args);
+    return b.dependency("sdl", args);
+}
+
 fn configureDependencies(
     b: *Build,
     exe: *Compile,
@@ -1605,6 +1614,7 @@ fn configureDependencies(
     sdl_android_include: []const u8,
     sdl_android_lib: []const u8,
     register_compile_flags_step: bool,
+    use_vr_sdl: bool,
 ) void {
     const exe_mod = exe.root_module;
 
@@ -1632,12 +1642,12 @@ fn configureDependencies(
             exe.linkSystemLibrary("SDL3");
         }
     } else {
-        const sdl = b.dependency("sdl", .{
+        const sdl = sdlDependency(b, use_vr_sdl, .{
             .target = target,
             .optimize = optimize,
             .sanitize_c = .off,
             .lto = .none,
-        });
+        }) orelse return;
         const sdl_lib = sdl.artifact("SDL3");
         exe_mod.addIncludePath(sdl.builder.path("include"));
         cflags.addIncludePath(sdl.builder.path("include"));
