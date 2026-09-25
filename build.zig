@@ -906,6 +906,7 @@ fn configureRenderQueue3DTests(
         "Run the pure-C VR unit tests (log, extension list, session state machine)",
     );
     vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_log_test", "tests/vr_log_test.c", "PROJECTS/ROLLER/vr_log.c"));
+    vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_ext_list_test", "tests/vr_ext_list_test.c", "PROJECTS/ROLLER/vr_ext_list.c"));
 
     const test_step = b.step("test", "Run focused unit tests and optional seam checks");
     test_step.dependOn(render_queue_tests);
