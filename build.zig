@@ -901,9 +901,16 @@ fn configureRenderQueue3DTests(
     );
     tick_clock_tests.dependOn(&run_tick_clock.step);
 
+    const vr_pure_tests = b.step(
+        "test-vr-pure",
+        "Run the pure-C VR unit tests (log, extension list, session state machine)",
+    );
+    vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_log_test", "tests/vr_log_test.c", "PROJECTS/ROLLER/vr_log.c"));
+
     const test_step = b.step("test", "Run focused unit tests and optional seam checks");
     test_step.dependOn(render_queue_tests);
     test_step.dependOn(tick_clock_tests);
+    test_step.dependOn(vr_pure_tests);
 
     const roller_core_manifest_check = b.addSystemCommand(&.{
         pythonExe(),
@@ -1593,6 +1600,34 @@ fn configureDesktopPlatform(
             exe_mod.addCMacro("_O_BINARY", "0x200");
         },
     }
+}
+
+/// Builds one dependency-free C unit test (the test source plus the single module it
+/// tests) and returns the step that runs it.
+fn addPureCTest(
+    b: *Build,
+    target: ResolvedTarget,
+    optimize: OptimizeMode,
+    c_flags: []const []const u8,
+    name: []const u8,
+    test_source: []const u8,
+    module_source: []const u8,
+) *Build.Step {
+    const mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    mod.addIncludePath(b.path("PROJECTS/ROLLER"));
+    mod.addCSourceFiles(.{
+        .flags = c_flags,
+        .files = &.{ test_source, module_source },
+    });
+    const exe = b.addExecutable(.{
+        .name = name,
+        .root_module = mod,
+    });
+    return &b.addRunArtifact(exe).step;
 }
 
 /// SDL package the game links against: the pinned Zizin13/SDL (`.sdl`) by default, the
