@@ -8,6 +8,8 @@
 # and test-only code that is not linked into roller-core.
 EXCLUDE|PROJECTS/ROLLER/roller.c
 EXCLUDE|PROJECTS/ROLLER/roller_web.c
+EXCLUDE|PROJECTS/ROLLER/vr_mvp_math_test.c
+EXCLUDE|PROJECTS/ROLLER/vr_runtime.c
 EXCLUDE|PROJECTS/ROLLER/nuklear_sdl_renderer.c
 EXCLUDE|PROJECTS/ROLLER/rollercomms.c
 EXCLUDE|PROJECTS/ROLLER/sound.c
