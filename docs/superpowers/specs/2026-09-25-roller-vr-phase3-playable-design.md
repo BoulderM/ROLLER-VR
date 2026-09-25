@@ -1,6 +1,6 @@
 # ROLLER VR — Phase 3: Playable VR
 
-**Status:** Design approved section by section on 2026-09-25; this written spec awaits the user's review. Nothing here is implemented yet.
+**Status:** Design and this written spec approved by the user on 2026-09-25. The M1 plan is written (`docs/superpowers/plans/2026-09-25-vr-phase3-m1-windows-steamvr-lifecycle.md`); nothing is implemented yet.
 **Date:** 2026-09-25
 **Branch:** `roller-vr`
 **Depends on:** `docs/superpowers/specs/2026-09-22-roller-vr-design.md` (overall VR design), `docs/superpowers/specs/2026-09-23-roller-vr-phase2-design.md` (Phase 2: stereo attract race; read its "Known gaps" and "Follow-ups")
