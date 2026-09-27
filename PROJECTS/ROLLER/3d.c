@@ -2269,8 +2269,13 @@ void doexit()
     frontend_shutdown_update();
 
 #ifndef __EMSCRIPTEN__
-  if (frontend_shutdown_complete())
+  if (frontend_shutdown_complete()) {
+#if defined(ROLLER_VR_BUILD)
+    if (g_bVRMode)
+      exit(vr_exit_status()); // non-zero when an OpenXR frame call failed
+#endif
     exit(0);
+  }
 #endif
 #endif
 }
@@ -3380,6 +3385,10 @@ int main(int argc, const char **argv, const char **envp)
   //__asm { int     10h; Reset video mode and exit game }// Reset video mode and exit game
   if (!frontend_shutdown_complete())
     doexit();
+#if defined(ROLLER_VR_BUILD)
+  if (g_bVRMode)
+    return vr_exit_status(); // non-zero when an OpenXR frame call failed
+#endif
   return 0;
 }
 #endif

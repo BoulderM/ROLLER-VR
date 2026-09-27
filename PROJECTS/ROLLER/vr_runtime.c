@@ -11,6 +11,7 @@
 #include "vr_view_merge.h"
 #include "vr_ext_list.h"
 #include "vr_log.h"
+#include "vr_session_fsm.h"
 
 #include <SDL3/SDL.h>
 
@@ -47,12 +48,27 @@ static XrSwapchain *s_swapchains;
 static XrSpace s_local_space;
 static VkCommandPool s_command_pool;
 static VkCommandBuffer s_command_buffer;
-static bool s_session_running;
+static VrSessionFsm s_fsm; /* session lifecycle decisions, see vr_session_fsm.h */
 static VrVkBinding s_vk_binding = VR_VK_BINDING_NONE;
 static VrExtList s_vk_instance_exts;
 static VrExtList s_vk_device_exts;
 static const char *s_vk_instance_ext_ptrs[VR_EXT_LIST_MAX];
 static const char *s_vk_device_ext_ptrs[VR_EXT_LIST_MAX];
+static int s_exit_status = 0;             /* process exit status, see vr_exit_status() */
+static bool s_quit_forwarded = false;     /* OpenXR asked to quit and the game has been told, see vr_forward_quit_to_game() */
+static int s_test_runtime_exit_after = 0; /* ROLLER_VR_TEST_RUNTIME_EXIT_AFTER=N, see vr_run_frame() */
+
+/* VrSessionState mirrors XrSessionState numerically so the state machine can be
+ * fed the runtime's values directly. */
+_Static_assert((int)XR_SESSION_STATE_IDLE == (int)VR_STATE_IDLE &&
+               (int)XR_SESSION_STATE_READY == (int)VR_STATE_READY &&
+               (int)XR_SESSION_STATE_SYNCHRONIZED == (int)VR_STATE_SYNCHRONIZED &&
+               (int)XR_SESSION_STATE_VISIBLE == (int)VR_STATE_VISIBLE &&
+               (int)XR_SESSION_STATE_FOCUSED == (int)VR_STATE_FOCUSED &&
+               (int)XR_SESSION_STATE_STOPPING == (int)VR_STATE_STOPPING &&
+               (int)XR_SESSION_STATE_LOSS_PENDING == (int)VR_STATE_LOSS_PENDING &&
+               (int)XR_SESSION_STATE_EXITING == (int)VR_STATE_EXITING,
+               "VrSessionState must match XrSessionState");
 /* task-7-round2 New Important 1: true from the moment vr_run_frame()'s own
  * xrBeginFrame() succeeds until its own xrEndFrame() call (success or
  * failure) or vr_shutdown()'s frame-close-out below runs. Lets vr_shutdown()
@@ -149,8 +165,13 @@ bool vr_prepare_vulkan(SDL_GPUVulkanOptions *out_options)
     if (!out_options)
         return fail("vr_prepare_vulkan: out_options is NULL");
     SDL_zerop(out_options);
+    vr_fsm_init(&s_fsm);
     vr_ext_list_init(&s_vk_instance_exts);
     vr_ext_list_init(&s_vk_device_exts);
+    s_exit_status = 0;
+
+    const char *test_exit = getenv("ROLLER_VR_TEST_RUNTIME_EXIT_AFTER");
+    s_test_runtime_exit_after = test_exit ? atoi(test_exit) : 0;
 
     /* --- 1. Which Vulkan interop extension does the runtime offer? --- */
     uint32_t ext_count = 0;
@@ -505,11 +526,117 @@ bool vr_init(void)
         return false;
     }
 
-    s_session_running = false;
-
     return true;
 }
 
+
+/* --- Session lifecycle (Phase 3 M1) -------------------------------------- */
+
+#define VR_EXIT_DRAIN_TIMEOUT_MS 2000
+
+/* The game only shuts down by running its frontend state machine (RACING -> ... ->
+ * SHUTDOWN -> QUIT inside main_loop_iteration()). Merely leaving the frame loop skips
+ * frontend_shutdown_finish(), so vr_shutdown(), ShutdownSDL() and the save path never
+ * run and main() exits 0 -- observed on Monado. So a quit that originates in OpenXR
+ * (the runtime ending the session, or an OpenXR failure) is forwarded to the game the
+ * way --vr-frames does it, and vr_run_frame() then keeps running the game's loop,
+ * without OpenXR frames, until the game has shut itself down. */
+static void vr_forward_quit_to_game(void)
+{
+    if (s_quit_forwarded)
+        return;
+    s_quit_forwarded = true;
+    vr_log_line("INFO", "asking the game to shut down (OpenXR is ending the session)");
+    quit_game = 1;
+    racing = 0;
+}
+
+static void vr_frame_call_failed(const char *what, XrResult result)
+{
+    vr_log_line("ERROR", "%s failed (XrResult=%d); shutting down", what, (int)result);
+    s_exit_status = 1;
+    vr_forward_quit_to_game();
+}
+
+/* Polls every pending OpenXR event, feeds session state changes to the state
+ * machine and carries out the actions it returns. Returns true when the runtime
+ * wants the application to quit. */
+static bool vr_poll_events(void)
+{
+    bool quit = false;
+    XrResult poll_result;
+    XrEventDataBuffer event = { .type = XR_TYPE_EVENT_DATA_BUFFER };
+    while ((poll_result = xrPollEvent(s_instance, &event)) == XR_SUCCESS) {
+        if (event.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
+            const XrEventDataSessionStateChanged *state_event = (const XrEventDataSessionStateChanged *)&event;
+            unsigned int actions = vr_fsm_on_state_changed(&s_fsm, (VrSessionState)state_event->state);
+            vr_log_line("INFO", "session state -> %d (actions=0x%x)", (int)state_event->state, actions);
+            if (actions & VR_ACTION_BEGIN_SESSION) {
+                XrSessionBeginInfo begin_info = {
+                    .type = XR_TYPE_SESSION_BEGIN_INFO,
+                    .primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
+                };
+                XrResult begin_result = xrBeginSession(s_session, &begin_info);
+                if (XR_FAILED(begin_result)) {
+                    vr_frame_call_failed("xrBeginSession", begin_result);
+                    quit = true;
+                } else {
+                    vr_fsm_session_begun(&s_fsm);
+                }
+            }
+            if (actions & VR_ACTION_END_SESSION) {
+                XrResult end_result = xrEndSession(s_session);
+                vr_log_line(XR_FAILED(end_result) ? "WARN" : "INFO", "xrEndSession -> XrResult=%d", (int)end_result);
+                vr_fsm_session_ended(&s_fsm);
+            }
+            if (actions & VR_ACTION_REQUEST_QUIT)
+                quit = true;
+        } else if (event.type == XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING) {
+            vr_log_line("WARN", "OpenXR instance loss pending; shutting down");
+            quit = true;
+        }
+        event.type = XR_TYPE_EVENT_DATA_BUFFER;
+    }
+    /* XR_EVENT_UNAVAILABLE (a success code) just means the queue is empty; a failure
+     * such as XR_ERROR_INSTANCE_LOST means the runtime is gone. */
+    if (XR_FAILED(poll_result)) {
+        vr_frame_call_failed("xrPollEvent", poll_result);
+        quit = true;
+    }
+    return quit;
+}
+
+/* Ends a running session the spec-clean way when the GAME is quitting:
+ * xrRequestExitSession, then drain events until the runtime reports STOPPING
+ * (vr_poll_events() calls xrEndSession). Bounded, because the runtime answers
+ * asynchronously; on timeout the still-running session is simply destroyed. When
+ * the runtime is the one ending the session there is nothing to request or wait for. */
+static void vr_end_session_cleanly(void)
+{
+    if (!vr_fsm_frames_allowed(&s_fsm) || vr_fsm_runtime_is_ending(&s_fsm))
+        return;
+
+    if (vr_fsm_should_request_exit(&s_fsm)) {
+        XrResult exit_result = xrRequestExitSession(s_session);
+        vr_log_line(XR_FAILED(exit_result) ? "WARN" : "INFO", "xrRequestExitSession -> XrResult=%d", (int)exit_result);
+        if (XR_FAILED(exit_result))
+            return; /* no STOPPING will follow: the runtime is gone or the session is not running */
+    }
+
+    Uint64 started = SDL_GetTicks();
+    while (vr_fsm_frames_allowed(&s_fsm) && s_exit_status == 0 &&
+           SDL_GetTicks() - started < VR_EXIT_DRAIN_TIMEOUT_MS) {
+        vr_poll_events();
+        if (!vr_fsm_frames_allowed(&s_fsm))
+            break;
+        SDL_Delay(10);
+    }
+    if (vr_fsm_frames_allowed(&s_fsm))
+        vr_log_line("WARN", "the runtime did not report STOPPING within %d ms; destroying the session directly",
+                    VR_EXIT_DRAIN_TIMEOUT_MS);
+    else
+        vr_log_line("INFO", "session ended after %llu ms", (unsigned long long)(SDL_GetTicks() - started));
+}
 
 /* Number of ticks that actually rendered and submitted a stereo layer, for
  * the --vr-frames N bounded-run option (g_iVRMaxFrames) and progress logging. */
@@ -548,73 +675,39 @@ void vr_shutdown(void)
     xrDestroySpace(s_local_space);
     s_local_space = XR_NULL_HANDLE;
 
-    /* task-7-round2 New Important 1: frontend_shutdown_finish() (3d.c) --
-     * this function's only caller -- runs from inside main_loop_iteration(),
-     * which itself can run from inside vr_run_frame() (between its own
-     * xrBeginFrame() and xrEndFrame() calls) on the game-initiated quit
-     * path: main_loop_iteration() reaches frontend's SHUTDOWN state and
-     * calls frontend_shutdown_finish() synchronously, still nested inside
-     * that same open vr_run_frame() frame. s_frame_open (set by
-     * vr_run_frame() around its own xrBeginFrame()/xrEndFrame() pair, see
-     * there) tells that case apart from the other path that reaches here:
-     * the runtime-initiated one, where vr_run_frame()'s event-poll loop
-     * already saw XR_SESSION_STATE_STOPPING and returned false with no
-     * frame outstanding (frontend_run_game_loop()'s `while (vr_run_frame())`
-     * loop then exits, and doexit() in main() drives the frontend shutdown
-     * state machine the rest of the way from the top level) -- s_session_
-     * running is still true on both paths (nothing else ever clears it), so
-     * it alone can't distinguish them.
-     *
-     * On the frame-open path: xrEndSession() requires XR_SESSION_STATE_
-     * STOPPING (OpenXR spec), but the session here is still just RUNNING --
-     * the runtime never asked us to stop, the game did. Reaching STOPPING
-     * the spec-clean way means xrRequestExitSession() + draining events
-     * until the runtime actually delivers that transition, which is
-     * unbounded async runtime-driven latency with no good way to bound it
-     * from inside a synchronous one-shot teardown call -- out of scope here
-     * (left as future work; the process is exiting regardless). Instead we
-     * just close out the still-open frame with an empty-layer xrEndFrame()
-     * (required regardless of which xrEndSession() strategy is used --
-     * destroying a session with a frame began-but-not-ended outstanding is
-     * itself invalid per the spec) and skip xrEndSession() entirely,
-     * proceeding straight to xrDestroySession(). vr_run_frame() checks
-     * s_session == XR_NULL_HANDLE (set at the bottom of this function)
-     * immediately after main_loop_iteration() returns and bails out before
-     * touching xrEndFrame() itself, so this is the only xrEndFrame() call
-     * for this tick -- see vr_run_frame() below.
-     *
-     * On the no-frame-open path, this is exactly the pre-existing, already-
-     * correct behavior: the runtime already drove the session to STOPPING,
-     * so xrEndSession() is exactly the call the spec expects here. */
-    if (s_session_running) {
-        if (s_frame_open) {
-            XrFrameEndInfo empty_frame_end_info = {
-                .type = XR_TYPE_FRAME_END_INFO,
-                .displayTime = s_frame_state.predictedDisplayTime,
-                .environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE,
-                .layerCount = 0,
-                .layers = NULL,
-            };
-            XrResult end_result = xrEndFrame(s_session, &empty_frame_end_info);
-            if (XR_FAILED(end_result)) {
-                fprintf(stderr, "vr_runtime: vr_shutdown(): closing out the still-open frame failed "
-                                 "(XrResult=%d) -- continuing shutdown anyway\n", (int)end_result);
-            }
-            s_frame_open = false;
-            fprintf(stderr, "vr_runtime: vr_shutdown() reached mid-frame (game-initiated quit) -- "
-                             "session is still RUNNING, not STOPPING, so xrEndSession() would be invalid "
-                             "here per the OpenXR spec; skipping it and destroying the session directly "
-                             "instead. A fully spec-clean xrRequestExitSession()+drain-to-STOPPING sequence "
-                             "is left as future work.\n");
-        } else {
-            xrEndSession(s_session);
-        }
+    /* frontend_shutdown_finish() (3d.c) -- this function's only caller -- is
+     * reached two ways. (1) Game-initiated quit: from inside main_loop_iteration(),
+     * which itself runs between xrBeginFrame() and xrEndFrame() in vr_run_frame(),
+     * so s_frame_open is true and the frame must be closed with an empty layer
+     * before the session can end (vr_run_frame() notices s_session == NULL right
+     * after main_loop_iteration() returns and bails without touching OpenXR).
+     * (2) A quit forwarded from OpenXR (vr_forward_quit_to_game()): vr_run_frame()
+     * then runs the game's shutdown without OpenXR frames, so no frame is open and
+     * the runtime has usually ended the session already. */
+    if (s_frame_open) {
+        XrFrameEndInfo empty_frame_end_info = {
+            .type = XR_TYPE_FRAME_END_INFO,
+            .displayTime = s_frame_state.predictedDisplayTime,
+            .environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE,
+            .layerCount = 0,
+            .layers = NULL,
+        };
+        XrResult end_result = xrEndFrame(s_session, &empty_frame_end_info);
+        if (XR_FAILED(end_result))
+            vr_log_line("WARN", "vr_shutdown(): closing the still-open frame failed (XrResult=%d); continuing", (int)end_result);
+        s_frame_open = false;
     }
+    vr_end_session_cleanly();
     xrDestroySession(s_session);
     s_session = XR_NULL_HANDLE;
     xrDestroyInstance(s_instance);
     s_instance = XR_NULL_HANDLE;
-    s_session_running = false;
+    vr_fsm_init(&s_fsm);
+}
+
+int vr_exit_status(void)
+{
+    return s_exit_status;
 }
 
 /* --- Live head tracking + per-eye MVP construction (Phase 2) ------------ */
@@ -942,39 +1035,39 @@ static Uint32 view_configs_height(Uint32 i)
 
 bool vr_run_frame(void)
 {
-    XrEventDataBuffer event = { .type = XR_TYPE_EVENT_DATA_BUFFER };
-    bool should_quit = false;
-    while (xrPollEvent(s_instance, &event) == XR_SUCCESS) {
-        if (event.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
-            XrEventDataSessionStateChanged *state_event = (XrEventDataSessionStateChanged *)&event;
-            if (state_event->state == XR_SESSION_STATE_READY && !s_session_running) {
-                XrSessionBeginInfo begin_info = {
-                    .type = XR_TYPE_SESSION_BEGIN_INFO,
-                    .primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
-                };
-                if (XR_FAILED(xrBeginSession(s_session, &begin_info))) return false;
-                s_session_running = true;
-            } else if (state_event->state == XR_SESSION_STATE_STOPPING ||
-                       state_event->state == XR_SESSION_STATE_EXITING ||
-                       state_event->state == XR_SESSION_STATE_LOSS_PENDING) {
-                should_quit = true;
-            }
-        }
-        event.type = XR_TYPE_EVENT_DATA_BUFFER;
-    }
-    if (should_quit) return false;
+    if (s_instance != XR_NULL_HANDLE && vr_poll_events())
+        vr_forward_quit_to_game();
 
-    if (!s_session_running) {
+    if (s_quit_forwarded) {
+        /* No more OpenXR frames. Run the game's own shutdown; when its state machine
+         * reaches frontend_shutdown_finish() it calls vr_shutdown(), which ends the
+         * session (if the runtime has not already) and destroys the instance. */
+        s_should_render_this_tick = false;
+        s_frame_view_count_for_layer = 0;
+        bool keep_running = main_loop_iteration() != 0;
+        return keep_running && s_instance != XR_NULL_HANDLE;
+    }
+
+    if (!vr_fsm_frames_allowed(&s_fsm)) {
         SDL_Delay(10);
         return true; /* keep looping, waiting for READY */
     }
 
+    XrResult frame_result;
     XrFrameWaitInfo frame_wait_info = { .type = XR_TYPE_FRAME_WAIT_INFO };
     s_frame_state = (XrFrameState){ .type = XR_TYPE_FRAME_STATE };
-    if (XR_FAILED(xrWaitFrame(s_session, &frame_wait_info, &s_frame_state))) return false;
+    frame_result = xrWaitFrame(s_session, &frame_wait_info, &s_frame_state);
+    if (XR_FAILED(frame_result)) {
+        vr_frame_call_failed("xrWaitFrame", frame_result);
+        return true; /* the next call runs the game's shutdown */
+    }
 
     XrFrameBeginInfo frame_begin_info = { .type = XR_TYPE_FRAME_BEGIN_INFO };
-    if (XR_FAILED(xrBeginFrame(s_session, &frame_begin_info))) return false;
+    frame_result = xrBeginFrame(s_session, &frame_begin_info);
+    if (XR_FAILED(frame_result)) {
+        vr_frame_call_failed("xrBeginFrame", frame_result);
+        return true;
+    }
     /* task-7-round2 New Important 1: marks this frame as open for
      * vr_shutdown() -- see its own comment and s_frame_open's declaration
      * above. Cleared below once this function's own xrEndFrame() runs (or
@@ -1036,7 +1129,10 @@ bool vr_run_frame(void)
     };
     XrResult end_result = xrEndFrame(s_session, &frame_end_info);
     s_frame_open = false;
-    if (XR_FAILED(end_result)) return false;
+    if (XR_FAILED(end_result)) {
+        vr_frame_call_failed("xrEndFrame", end_result);
+        return true; /* the next call runs the game's shutdown */
+    }
 
     if (s_frame_view_count_for_layer > 0) {
         s_vr_frames_presented++;
@@ -1056,6 +1152,15 @@ bool vr_run_frame(void)
             fprintf(stderr, "vr_runtime: --vr-frames %d reached, requesting quit\n", g_iVRMaxFrames);
             quit_game = 1;
             racing = 0;
+        }
+        /* Test hook (ROLLER_VR_TEST_RUNTIME_EXIT_AFTER=N): ask the RUNTIME to end the
+         * session after N presented frames, without going through the game's quit
+         * path. The runtime then reports STOPPING exactly as it does when the user
+         * quits from SteamVR, exercising the runtime-initiated shutdown path. */
+        if (s_test_runtime_exit_after > 0 && s_vr_frames_presented == s_test_runtime_exit_after) {
+            XrResult exit_result = xrRequestExitSession(s_session);
+            vr_log_line("INFO", "test hook: xrRequestExitSession after %d frames -> XrResult=%d",
+                        s_vr_frames_presented, (int)exit_result);
         }
     } else {
         s_vr_empty_frames++;

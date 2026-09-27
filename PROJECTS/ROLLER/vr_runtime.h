@@ -21,6 +21,10 @@ bool vr_prepare_vulkan(SDL_GPUVulkanOptions *out_options);
 bool vr_init(void);
 void vr_shutdown(void);
 
+/* Process exit status for a VR run: 0 for an orderly end (game quit, or the
+ * runtime ending the session), 1 if an OpenXR frame call failed. */
+int vr_exit_status(void);
+
 /* Locates both eyes' head-tracked poses for the given predicted display
  * time. The FOV is always the runtime's. Orientation and position are merged
  * independently (vr_merge_view(), vr_view_merge.h): each comes from the located
@@ -55,10 +59,12 @@ void build_mvp_vr_eye(float mvp_out[16],
  * xrWaitFrame/xrBeginFrame and xrEndFrame. Call in a tight loop from
  * frontend_run_game_loop()'s VR branch (3d.c) in place of calling
  * main_loop_iteration() directly -- vr_run_frame() calls it internally.
- * Returns false when the game itself wants to quit (main_loop_iteration()
- * returned 0) or the OpenXR session is exiting/lost; true otherwise
- * (including the "not session_running yet" wait state, where the caller
- * should just keep looping).
+ * Returns false once the game has finished its own shutdown. A quit that
+ * originates in OpenXR (the runtime ending the session, an OpenXR failure) does
+ * not return early: it is forwarded to the game, and later calls run the game's
+ * loop without OpenXR frames until frontend_shutdown_finish() has run. Returns
+ * true otherwise (including the "not session_running yet" wait state, where the
+ * caller should just keep looping).
  *
  * While main_loop_iteration() runs, if it reaches race_draw()->
  * updatescreen(), updatescreen()'s g_bVRMode branch calls
