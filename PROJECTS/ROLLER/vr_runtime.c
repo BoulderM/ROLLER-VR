@@ -9,6 +9,8 @@
  */
 #include "vr_runtime.h"
 #include "vr_view_merge.h"
+#include "vr_ext_list.h"
+#include "vr_log.h"
 
 #include <SDL3/SDL.h>
 
@@ -46,6 +48,11 @@ static XrSpace s_local_space;
 static VkCommandPool s_command_pool;
 static VkCommandBuffer s_command_buffer;
 static bool s_session_running;
+static VrVkBinding s_vk_binding = VR_VK_BINDING_NONE;
+static VrExtList s_vk_instance_exts;
+static VrExtList s_vk_device_exts;
+static const char *s_vk_instance_ext_ptrs[VR_EXT_LIST_MAX];
+static const char *s_vk_device_ext_ptrs[VR_EXT_LIST_MAX];
 /* task-7-round2 New Important 1: true from the moment vr_run_frame()'s own
  * xrBeginFrame() succeeds until its own xrEndFrame() call (success or
  * failure) or vr_shutdown()'s frame-close-out below runs. Lets vr_shutdown()
@@ -81,8 +88,188 @@ static bool fail_vk(const char *what, VkResult result)
     return false;
 }
 
+/* --- Vulkan interop negotiation (Phase 3 M1) ---------------------------- */
+
+/* Converts an XrVersion to a Vulkan API version, clamping the fields so an
+ * "unbounded" runtime maximum (0xffff minor, 0xffffffff patch) cannot overflow
+ * VK_MAKE_API_VERSION's bit fields. */
+static Uint32 vr_xr_to_vk_version(XrVersion v)
+{
+    Uint32 major = XR_VERSION_MAJOR(v);
+    Uint32 minor = XR_VERSION_MINOR(v);
+    Uint32 patch = XR_VERSION_PATCH(v);
+    if (major > 127) major = 127;
+    if (minor > 1023) minor = 1023;
+    if (patch > 4095) patch = 4095;
+    return VK_MAKE_API_VERSION(0, major, minor, patch);
+}
+
+/* Vulkan 1.1 makes VK_QUEUE_FAMILY_EXTERNAL usable in barriers without enabling
+ * VK_KHR_external_memory (VUID-VkImageMemoryBarrier-None-09120), which the
+ * swapchain image release in vr_present_stereo_frame() relies on. Ask for it
+ * unless the runtime's supported range says otherwise. */
+static Uint32 vr_pick_vulkan_api_version(const XrGraphicsRequirementsVulkanKHR *req)
+{
+    Uint32 wanted = VK_MAKE_API_VERSION(0, 1, 1, 0);
+    Uint32 min_v = vr_xr_to_vk_version(req->minApiVersionSupported);
+    Uint32 max_v = vr_xr_to_vk_version(req->maxApiVersionSupported);
+    if (wanted < min_v) wanted = min_v;
+    if (wanted > max_v) wanted = max_v;
+    return wanted;
+}
+
+typedef XrResult (XRAPI_PTR *VrGetExtensionStringFn)(XrInstance, XrSystemId, uint32_t, uint32_t *, char *);
+
+/* Two-call idiom for xrGetVulkanInstanceExtensionsKHR / xrGetVulkanDeviceExtensionsKHR:
+ * fetch the runtime's space-separated extension string and add the names to `out`. */
+static bool vr_query_extension_string(VrGetExtensionStringFn fn, const char *what, VrExtList *out)
+{
+    uint32_t needed = 0;
+    XrResult xr_result = fn(s_instance, s_system_id, 0, &needed, NULL);
+    if (XR_FAILED(xr_result))
+        return fail_xr(what, xr_result);
+    char *buffer = calloc(needed ? needed : 1, 1);
+    if (!buffer)
+        return fail("out of memory reading the runtime's Vulkan extension list");
+    xr_result = fn(s_instance, s_system_id, needed, &needed, buffer);
+    if (XR_FAILED(xr_result)) {
+        free(buffer);
+        return fail_xr(what, xr_result);
+    }
+    vr_log_line("INFO", "%s: %s", what, buffer[0] ? buffer : "(none)");
+    bool stored = vr_ext_list_add_spaced(out, buffer);
+    free(buffer);
+    if (!stored)
+        return fail("could not store every Vulkan extension name the runtime listed");
+    return true;
+}
+
+bool vr_prepare_vulkan(SDL_GPUVulkanOptions *out_options)
+{
+    if (!out_options)
+        return fail("vr_prepare_vulkan: out_options is NULL");
+    SDL_zerop(out_options);
+    vr_ext_list_init(&s_vk_instance_exts);
+    vr_ext_list_init(&s_vk_device_exts);
+
+    /* --- 1. Which Vulkan interop extension does the runtime offer? --- */
+    uint32_t ext_count = 0;
+    XrResult xr_result = xrEnumerateInstanceExtensionProperties(NULL, 0, &ext_count, NULL);
+    if (XR_FAILED(xr_result))
+        return fail_xr("xrEnumerateInstanceExtensionProperties (count) failed -- is an OpenXR runtime installed and active?", xr_result);
+    XrExtensionProperties *ext_props = calloc(ext_count ? ext_count : 1, sizeof(XrExtensionProperties));
+    if (!ext_props)
+        return fail("out of memory enumerating OpenXR extensions");
+    for (uint32_t i = 0; i < ext_count; i++)
+        ext_props[i].type = XR_TYPE_EXTENSION_PROPERTIES;
+    xr_result = xrEnumerateInstanceExtensionProperties(NULL, ext_count, &ext_count, ext_props);
+    if (XR_FAILED(xr_result)) {
+        free(ext_props);
+        return fail_xr("xrEnumerateInstanceExtensionProperties failed", xr_result);
+    }
+    bool has_enable_v1 = false, has_enable2 = false;
+    vr_log_line("INFO", "OpenXR runtime advertises %u instance extensions:", (unsigned)ext_count);
+    for (uint32_t i = 0; i < ext_count; i++) {
+        vr_log_line("INFO", "  %s (v%u)", ext_props[i].extensionName, (unsigned)ext_props[i].extensionVersion);
+        if (strcmp(ext_props[i].extensionName, XR_KHR_VULKAN_ENABLE_EXTENSION_NAME) == 0)
+            has_enable_v1 = true;
+        if (strcmp(ext_props[i].extensionName, XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME) == 0)
+            has_enable2 = true;
+    }
+    free(ext_props);
+
+    s_vk_binding = vr_choose_vk_binding(has_enable_v1, has_enable2);
+    if (s_vk_binding == VR_VK_BINDING_NONE)
+        return fail("the OpenXR runtime offers neither XR_KHR_vulkan_enable nor XR_KHR_vulkan_enable2");
+    if (s_vk_binding == VR_VK_BINDING_ENABLE2_FALLBACK)
+        vr_log_line("WARN", "runtime lacks XR_KHR_vulkan_enable; falling back to XR_KHR_vulkan_enable2, whose "
+                            "valid usage expects the runtime to create the Vulkan instance/device (SDL_GPU creates them here)");
+    else
+        vr_log_line("INFO", "using XR_KHR_vulkan_enable (the application creates the Vulkan instance/device)");
+
+    /* --- 2. Create the OpenXR instance and find the headset --- */
+    const char *enabled_extensions[] = {
+        s_vk_binding == VR_VK_BINDING_ENABLE_V1 ? XR_KHR_VULKAN_ENABLE_EXTENSION_NAME
+                                                : XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME
+    };
+    XrInstanceCreateInfo instance_create_info = { .type = XR_TYPE_INSTANCE_CREATE_INFO };
+    strncpy(instance_create_info.applicationInfo.applicationName, "ROLLER VR",
+            XR_MAX_APPLICATION_NAME_SIZE - 1);
+    instance_create_info.applicationInfo.applicationVersion = 1;
+    instance_create_info.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+    instance_create_info.enabledExtensionCount = 1;
+    instance_create_info.enabledExtensionNames = enabled_extensions;
+
+    s_instance = XR_NULL_HANDLE;
+    xr_result = xrCreateInstance(&instance_create_info, &s_instance);
+    if (XR_FAILED(xr_result))
+        return fail_xr("xrCreateInstance failed", xr_result);
+
+    XrInstanceProperties instance_props = { .type = XR_TYPE_INSTANCE_PROPERTIES };
+    if (XR_SUCCEEDED(xrGetInstanceProperties(s_instance, &instance_props)))
+        vr_log_line("INFO", "OpenXR runtime: %s (%u.%u.%u)", instance_props.runtimeName,
+                    (unsigned)XR_VERSION_MAJOR(instance_props.runtimeVersion),
+                    (unsigned)XR_VERSION_MINOR(instance_props.runtimeVersion),
+                    (unsigned)XR_VERSION_PATCH(instance_props.runtimeVersion));
+
+    XrSystemGetInfo system_get_info = {
+        .type = XR_TYPE_SYSTEM_GET_INFO,
+        .formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY,
+    };
+    xr_result = xrGetSystem(s_instance, &system_get_info, &s_system_id);
+    if (XR_FAILED(xr_result))
+        return fail_xr("xrGetSystem failed (no HMD available from the active OpenXR runtime?)", xr_result);
+
+    /* --- 3. What Vulkan API version and extensions does the runtime need? --- */
+    const char *requirements_fn_name = s_vk_binding == VR_VK_BINDING_ENABLE_V1
+        ? "xrGetVulkanGraphicsRequirementsKHR" : "xrGetVulkanGraphicsRequirements2KHR";
+    PFN_xrGetVulkanGraphicsRequirementsKHR pfn_get_requirements = NULL;
+    xr_result = xrGetInstanceProcAddr(s_instance, requirements_fn_name, (PFN_xrVoidFunction *)&pfn_get_requirements);
+    if (XR_FAILED(xr_result) || !pfn_get_requirements)
+        return fail_xr("failed to load the runtime's Vulkan graphics requirements function", xr_result);
+    XrGraphicsRequirementsVulkanKHR requirements = { .type = XR_TYPE_GRAPHICS_REQUIREMENTS_VULKAN_KHR };
+    xr_result = pfn_get_requirements(s_instance, s_system_id, &requirements);
+    if (XR_FAILED(xr_result))
+        return fail_xr("the runtime's Vulkan graphics requirements query failed", xr_result);
+    Uint32 api_version = vr_pick_vulkan_api_version(&requirements);
+    vr_log_line("INFO", "runtime supports Vulkan API %u.%u..%u.%u; requesting %u.%u.%u",
+                (unsigned)VK_API_VERSION_MAJOR(vr_xr_to_vk_version(requirements.minApiVersionSupported)),
+                (unsigned)VK_API_VERSION_MINOR(vr_xr_to_vk_version(requirements.minApiVersionSupported)),
+                (unsigned)VK_API_VERSION_MAJOR(vr_xr_to_vk_version(requirements.maxApiVersionSupported)),
+                (unsigned)VK_API_VERSION_MINOR(vr_xr_to_vk_version(requirements.maxApiVersionSupported)),
+                (unsigned)VK_API_VERSION_MAJOR(api_version), (unsigned)VK_API_VERSION_MINOR(api_version),
+                (unsigned)VK_API_VERSION_PATCH(api_version));
+
+    if (s_vk_binding == VR_VK_BINDING_ENABLE_V1) {
+        PFN_xrGetVulkanInstanceExtensionsKHR pfn_instance_exts = NULL;
+        PFN_xrGetVulkanDeviceExtensionsKHR pfn_device_exts = NULL;
+        xr_result = xrGetInstanceProcAddr(s_instance, "xrGetVulkanInstanceExtensionsKHR", (PFN_xrVoidFunction *)&pfn_instance_exts);
+        if (XR_FAILED(xr_result) || !pfn_instance_exts)
+            return fail_xr("failed to load xrGetVulkanInstanceExtensionsKHR", xr_result);
+        xr_result = xrGetInstanceProcAddr(s_instance, "xrGetVulkanDeviceExtensionsKHR", (PFN_xrVoidFunction *)&pfn_device_exts);
+        if (XR_FAILED(xr_result) || !pfn_device_exts)
+            return fail_xr("failed to load xrGetVulkanDeviceExtensionsKHR", xr_result);
+        if (!vr_query_extension_string(pfn_instance_exts, "runtime-required Vulkan instance extensions", &s_vk_instance_exts))
+            return false;
+        if (!vr_query_extension_string(pfn_device_exts, "runtime-required Vulkan device extensions", &s_vk_device_exts))
+            return false;
+    }
+
+    out_options->vulkan_api_version = api_version;
+    out_options->instance_extension_count = vr_ext_list_ptrs(&s_vk_instance_exts, s_vk_instance_ext_ptrs, VR_EXT_LIST_MAX);
+    out_options->instance_extension_names = s_vk_instance_ext_ptrs;
+    out_options->device_extension_count = vr_ext_list_ptrs(&s_vk_device_exts, s_vk_device_ext_ptrs, VR_EXT_LIST_MAX);
+    out_options->device_extension_names = s_vk_device_ext_ptrs;
+    return true;
+}
+
 bool vr_init(void)
 {
+    if (s_instance == XR_NULL_HANDLE) {
+        fail("vr_init() called before vr_prepare_vulkan() created the OpenXR instance");
+        return false;
+    }
+
     /* --- 1. Adopt the game's existing SDL_GPU device (Vulkan) --- */
     /* task-7-review Finding 1 (Critical): this used to call its own
      * SDL_CreateGPUDevice() here, creating a SECOND, independent VkDevice
@@ -132,87 +319,55 @@ bool vr_init(void)
     printf("vr_runtime: got VkInstance=%p VkDevice=%p queueFamilyIndex=%u\n",
            (void *)s_vk_instance, (void *)s_vk_device, s_vk_queue_family_index);
 
-    /* --- 2. Create the OpenXR instance --- */
-    const char *enabled_extensions[] = { XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME };
-
-    XrInstanceCreateInfo instance_create_info = { .type = XR_TYPE_INSTANCE_CREATE_INFO };
-    strncpy(instance_create_info.applicationInfo.applicationName, "ROLLER VR",
-            XR_MAX_APPLICATION_NAME_SIZE - 1);
-    instance_create_info.applicationInfo.applicationVersion = 1;
-    instance_create_info.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
-    instance_create_info.enabledExtensionCount = 1;
-    instance_create_info.enabledExtensionNames = enabled_extensions;
-
-    s_instance = XR_NULL_HANDLE;
-    XrResult xr_result = xrCreateInstance(&instance_create_info, &s_instance);
-    if (XR_FAILED(xr_result)) {
-        fail_xr("xrCreateInstance failed", xr_result);
-        return false;
-    }
-
-    /* --- 3. Get the system (the "head" device — the Simulated HMD when no real headset is attached) --- */
-    XrSystemGetInfo system_get_info = {
-        .type = XR_TYPE_SYSTEM_GET_INFO,
-        .formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY,
-    };
-    xr_result = xrGetSystem(s_instance, &system_get_info, &s_system_id);
-    if (XR_FAILED(xr_result)) {
-        fail_xr("xrGetSystem failed (no HMD available from the active OpenXR runtime?)", xr_result);
-        return false;
-    }
-
-    /* Required by the OpenXR spec before creating a Vulkan-backed session,
-     * even though we already have our own device and don't act on the
-     * returned version range here. */
-    PFN_xrGetVulkanGraphicsRequirements2KHR pfn_get_vk_requirements = NULL;
-    xr_result = xrGetInstanceProcAddr(s_instance, "xrGetVulkanGraphicsRequirements2KHR",
-                                       (PFN_xrVoidFunction *)&pfn_get_vk_requirements);
-    if (XR_FAILED(xr_result) || !pfn_get_vk_requirements) {
-        fail_xr("failed to load xrGetVulkanGraphicsRequirements2KHR", xr_result);
-        return false;
-    }
-    XrGraphicsRequirementsVulkan2KHR vk_requirements = { .type = XR_TYPE_GRAPHICS_REQUIREMENTS_VULKAN2_KHR };
-    xr_result = pfn_get_vk_requirements(s_instance, s_system_id, &vk_requirements);
-    if (XR_FAILED(xr_result)) {
-        fail_xr("xrGetVulkanGraphicsRequirements2KHR failed", xr_result);
-        return false;
-    }
-
-    /* Also required by the spec (XR_KHR_vulkan_enable2) when the app supplies
-     * its own already-created Vulkan device, as we do here via SDL_GPU: the
-     * runtime must be told which physical device we're using before
-     * xrCreateSession, even though we already know it ourselves. Skipping
-     * this call makes xrCreateSession fail with XR_ERROR_VALIDATION_FAILURE
-     * ("Has not called xrGetVulkanGraphicsDevice2KHR") on at least Monado. */
-    PFN_xrGetVulkanGraphicsDevice2KHR pfn_get_vk_device = NULL;
-    xr_result = xrGetInstanceProcAddr(s_instance, "xrGetVulkanGraphicsDevice2KHR",
-                                       (PFN_xrVoidFunction *)&pfn_get_vk_device);
-    if (XR_FAILED(xr_result) || !pfn_get_vk_device) {
-        fail_xr("failed to load xrGetVulkanGraphicsDevice2KHR", xr_result);
-        return false;
-    }
-    XrVulkanGraphicsDeviceGetInfoKHR vk_device_get_info = {
-        .type = XR_TYPE_VULKAN_GRAPHICS_DEVICE_GET_INFO_KHR,
-        .systemId = s_system_id,
-        .vulkanInstance = s_vk_instance,
-    };
+    /* --- 2. Tell the runtime which physical device we use --- */
+    /* Required by the spec before creating a Vulkan-backed session even though
+     * SDL_GPU already chose the device: skipping it makes xrCreateSession fail
+     * with XR_ERROR_VALIDATION_FAILURE on at least Monado. The v1 and v2 entry
+     * points differ; the graphics binding struct is the same for both. */
+    XrResult xr_result;
     VkPhysicalDevice xr_required_physical_device = VK_NULL_HANDLE;
-    xr_result = pfn_get_vk_device(s_instance, &vk_device_get_info, &xr_required_physical_device);
-    if (XR_FAILED(xr_result)) {
-        fail_xr("xrGetVulkanGraphicsDevice2KHR failed", xr_result);
-        return false;
+    if (s_vk_binding == VR_VK_BINDING_ENABLE_V1) {
+        PFN_xrGetVulkanGraphicsDeviceKHR pfn_get_vk_device = NULL;
+        xr_result = xrGetInstanceProcAddr(s_instance, "xrGetVulkanGraphicsDeviceKHR",
+                                           (PFN_xrVoidFunction *)&pfn_get_vk_device);
+        if (XR_FAILED(xr_result) || !pfn_get_vk_device) {
+            fail_xr("failed to load xrGetVulkanGraphicsDeviceKHR", xr_result);
+            return false;
+        }
+        xr_result = pfn_get_vk_device(s_instance, s_system_id, s_vk_instance, &xr_required_physical_device);
+        if (XR_FAILED(xr_result)) {
+            fail_xr("xrGetVulkanGraphicsDeviceKHR failed", xr_result);
+            return false;
+        }
+    } else {
+        PFN_xrGetVulkanGraphicsDevice2KHR pfn_get_vk_device = NULL;
+        xr_result = xrGetInstanceProcAddr(s_instance, "xrGetVulkanGraphicsDevice2KHR",
+                                           (PFN_xrVoidFunction *)&pfn_get_vk_device);
+        if (XR_FAILED(xr_result) || !pfn_get_vk_device) {
+            fail_xr("failed to load xrGetVulkanGraphicsDevice2KHR", xr_result);
+            return false;
+        }
+        XrVulkanGraphicsDeviceGetInfoKHR vk_device_get_info = {
+            .type = XR_TYPE_VULKAN_GRAPHICS_DEVICE_GET_INFO_KHR,
+            .systemId = s_system_id,
+            .vulkanInstance = s_vk_instance,
+        };
+        xr_result = pfn_get_vk_device(s_instance, &vk_device_get_info, &xr_required_physical_device);
+        if (XR_FAILED(xr_result)) {
+            fail_xr("xrGetVulkanGraphicsDevice2KHR failed", xr_result);
+            return false;
+        }
     }
     if (xr_required_physical_device != s_vk_physical_device) {
         fail("SDL_GPU's Vulkan physical device does not match the physical device the OpenXR "
-             "runtime requires (xrGetVulkanGraphicsDevice2KHR) -- this can happen on multi-GPU "
-             "systems; creating the session against a mismatched device/physicalDevice pair is "
-             "undefined behavior per the Vulkan spec");
+             "runtime requires -- this can happen on multi-GPU systems; creating the session "
+             "against a mismatched device/physicalDevice pair is undefined behavior per the Vulkan spec");
         return false;
     }
 
-    /* --- 4. Create the session against our existing Vulkan device --- */
-    XrGraphicsBindingVulkan2KHR vk_binding = {
-        .type = XR_TYPE_GRAPHICS_BINDING_VULKAN2_KHR,
+    /* --- 3. Create the session against our existing Vulkan device --- */
+    XrGraphicsBindingVulkanKHR vk_binding = {
+        .type = XR_TYPE_GRAPHICS_BINDING_VULKAN_KHR, /* XR_TYPE_GRAPHICS_BINDING_VULKAN2_KHR is the same value */
         .instance = s_vk_instance,
         .physicalDevice = xr_required_physical_device,
         .device = s_vk_device,
@@ -231,6 +386,31 @@ bool vr_init(void)
         return false;
     }
     printf("vr_runtime: OpenXR session created\n");
+
+    /* Log what the runtime offers: the eye swapchains below are created as
+     * VK_FORMAT_R8G8B8A8_UNORM, which a runtime may not list (SteamVR prefers sRGB). */
+    uint32_t format_count = 0;
+    if (XR_SUCCEEDED(xrEnumerateSwapchainFormats(s_session, 0, &format_count, NULL)) && format_count > 0) {
+        int64_t *formats = calloc(format_count, sizeof(int64_t));
+        if (formats && XR_SUCCEEDED(xrEnumerateSwapchainFormats(s_session, format_count, &format_count, formats))) {
+            char list[512] = "";
+            bool has_unorm = false;
+            for (uint32_t i = 0; i < format_count; i++) {
+                char one[24];
+                snprintf(one, sizeof(one), "%s%lld", i ? " " : "", (long long)formats[i]);
+                if (strlen(list) + strlen(one) < sizeof(list))
+                    strcat(list, one);
+                if (formats[i] == (int64_t)VK_FORMAT_R8G8B8A8_UNORM)
+                    has_unorm = true;
+            }
+            vr_log_line("INFO", "runtime swapchain formats (VkFormat values): %s", list);
+            if (!has_unorm)
+                vr_log_line("WARN", "the runtime does not list VK_FORMAT_R8G8B8A8_UNORM (%d), which the eye "
+                                    "swapchains use; xrCreateSwapchain is likely to fail",
+                            (int)VK_FORMAT_R8G8B8A8_UNORM);
+        }
+        free(formats);
+    }
 
     /* --- 5. Enumerate the view configuration (expect 2 views for stereo) --- */
     s_view_count = 0;
@@ -329,6 +509,7 @@ bool vr_init(void)
 
     return true;
 }
+
 
 /* Number of ticks that actually rendered and submitted a stereo layer, for
  * the --vr-frames N bounded-run option (g_iVRMaxFrames) and progress logging. */

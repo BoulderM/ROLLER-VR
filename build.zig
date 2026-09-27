@@ -289,6 +289,7 @@ pub fn build(b: *std.Build) void {
                 "PROJECTS/ROLLER/vr_runtime.c",
                 "PROJECTS/ROLLER/vr_diag.c",
                 "PROJECTS/ROLLER/vr_log.c",
+                "PROJECTS/ROLLER/vr_ext_list.c",
             },
         });
 

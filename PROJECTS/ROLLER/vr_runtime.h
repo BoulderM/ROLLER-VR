@@ -2,9 +2,22 @@
 #define VR_RUNTIME_H
 
 #include <stdbool.h>
+#include <SDL3/SDL_gpu.h>
 #include <openxr/openxr.h>
 #include "scene_render_types.h"
 
+/* Step 1 of VR startup, called by InitSDL()'s VR branch BEFORE the GPU device is
+ * created: creates the OpenXR instance, finds the headset, and asks the runtime
+ * which Vulkan API version and instance/device extensions its Vulkan interop
+ * needs. Fills *out_options (arrays owned by this module, valid until
+ * vr_shutdown()) so SDL_GPU can create a compatible VkInstance/VkDevice via
+ * SDL_PROP_GPU_DEVICE_CREATE_VULKAN_OPTIONS_POINTER. Uses XR_KHR_vulkan_enable
+ * (application-created Vulkan objects) and falls back to XR_KHR_vulkan_enable2
+ * with a logged warning. Returns false on failure (details in the log). */
+bool vr_prepare_vulkan(SDL_GPUVulkanOptions *out_options);
+
+/* Step 2, called from main() after InitSDL(): adopts SDL_GPU's device, creates
+ * the session, swapchains and reference space. Requires vr_prepare_vulkan(). */
 bool vr_init(void);
 void vr_shutdown(void);
 

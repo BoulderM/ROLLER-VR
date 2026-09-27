@@ -1,6 +1,7 @@
 #include "roller.h"
 #if defined(ROLLER_VR_BUILD)
 #include "vr_diag.h"
+#include "vr_runtime.h"
 #endif
 #include "scene_render_gpu.h"
 #include "crt_filter.h"
@@ -834,11 +835,29 @@ int InitSDL(char *whiplash_root, const char *midi_root)
      * walking-skeleton's own SDL_CreateGPUDevice call exactly. s_pGPUDevice
      * only exists on non-WASM targets (see its declaration above), and VR
      * mode is meaningless in a browser build anyway. */
+#if defined(ROLLER_VR_BUILD)
+    /* The OpenXR runtime dictates the Vulkan API version and extensions the
+     * VkInstance/VkDevice must enable, so ask it first and hand the answer to
+     * SDL_GPU (patched SDL fork, SDL_GPUVulkanOptions). */
+    SDL_GPUVulkanOptions vkOptions;
+    if (!vr_prepare_vulkan(&vkOptions))
+      vr_diag_fatal("Couldn't prepare the OpenXR runtime; see roller-vr.log next to the executable.");
+    SDL_PropertiesID gpuProps = SDL_CreateProperties();
+    SDL_SetBooleanProperty(gpuProps, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
+    SDL_SetBooleanProperty(gpuProps, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, false);
+    SDL_SetBooleanProperty(gpuProps, SDL_PROP_GPU_DEVICE_CREATE_PREFERLOWPOWER_BOOLEAN, false);
+    SDL_SetPointerProperty(gpuProps, SDL_PROP_GPU_DEVICE_CREATE_VULKAN_OPTIONS_POINTER, &vkOptions);
+    s_pGPUDevice = SDL_CreateGPUDeviceWithProperties(gpuProps);
+    SDL_DestroyProperties(gpuProps);
+    if (!s_pGPUDevice)
+      vr_diag_fatal("Couldn't create the GPU device: %s", SDL_GetError());
+#else
     s_pGPUDevice = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, NULL);
     if (!s_pGPUDevice) {
       ErrorBoxExit("Couldn't create GPU device: %s", SDL_GetError());
       return 1;
     }
+#endif
     SDL_Log("GPU driver (VR mode): %s", SDL_GetGPUDeviceDriver(s_pGPUDevice));
     return 0;
   }
