@@ -331,6 +331,29 @@ pub fn build(b: *std.Build) void {
             },
         }
         b.installArtifact(vr_exe);
+
+        // Check of the SDL fork's SDL_GPUVulkanOptions plumbing. Needs a Vulkan GPU and a
+        // display (fatal-gpu), so it is built into <prefix>/bin to be copied there and is
+        // not part of `zig build test`.
+        if (b.lazyDependency("sdl_vr", .{
+            .target = target,
+            .optimize = optimize,
+            .sanitize_c = .off,
+            .lto = .none,
+        })) |sdl_vr| {
+            const vk_options_mod = b.createModule(.{
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            });
+            vk_options_mod.addCSourceFile(.{ .file = b.path("tests/vr_vulkan_options_test.c"), .flags = c_flags });
+            vk_options_mod.addIncludePath(sdl_vr.builder.path("include"));
+            vk_options_mod.linkLibrary(sdl_vr.artifact("SDL3"));
+            b.installArtifact(b.addExecutable(.{
+                .name = "vr_vulkan_options_test",
+                .root_module = vk_options_mod,
+            }));
+        }
     }
 
     if (python_checks) {
