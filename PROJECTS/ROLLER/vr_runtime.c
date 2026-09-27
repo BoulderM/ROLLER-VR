@@ -592,7 +592,14 @@ static bool vr_poll_events(void)
             if (actions & VR_ACTION_REQUEST_QUIT)
                 quit = true;
         } else if (event.type == XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING) {
-            vr_log_line("WARN", "OpenXR instance loss pending; shutting down");
+            /* Per the M1 spec, instance loss takes the same non-zero-exit path as a
+             * failed OpenXR call (vr_frame_call_failed), not the zero-exit path a
+             * clean runtime-initiated session end (STOPPING/EXITING/LOSS_PENDING,
+             * handled above) takes -- the instance itself is gone, which is a
+             * runtime failure, not an orderly end. */
+            vr_log_line("ERROR", "OpenXR instance loss pending; shutting down");
+            s_exit_status = 1;
+            vr_forward_quit_to_game();
             quit = true;
         }
         event.type = XR_TYPE_EVENT_DATA_BUFFER;

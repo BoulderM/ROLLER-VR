@@ -40,6 +40,23 @@ bool vr_log_open(const char *path)
     if (!f)
         return false;
 
+#if defined(_WIN32)
+    /* roller-vr.exe is a GUI-subsystem process; started with no console attached
+     * (the normal case), fds 0/1/2 have no valid OS handle behind them at all, so
+     * VR_DUP()/VR_DUP2() on them below is unreliable (confirmed against mingw-w64/
+     * MSVC GUI-app reports: dup2 onto an unattached stdio fd does not reliably make
+     * later fprintf(stdout/stderr, ...) calls reach the target). freopen() onto the
+     * null device first gives both streams a real, valid fd to redirect from, the
+     * same state a console-attached process already has -- the block below then
+     * behaves identically whether or not a console was actually present. Loses the
+     * (minor, GUI-only) ability to fall back to a console on failure below; the
+     * fatal-error path still reaches the user via a message box (vr_diag_fatal). */
+    if (!freopen("NUL", "w", stdout) || !freopen("NUL", "w", stderr)) {
+        fclose(f);
+        return false;
+    }
+#endif
+
     fflush(stdout);
     fflush(stderr);
     s_saved_out = VR_DUP(1);

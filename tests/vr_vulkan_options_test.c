@@ -113,6 +113,17 @@ int main(void)
     if (device)
         SDL_DestroyGPUDevice(device);
 
+    /* A later SUCCESSFUL creation must not leave a stale error from an earlier,
+     * unrelated failure lying around: vr_diag_fatal() reports whatever
+     * SDL_GetError() holds, and the failed device-extension request just above
+     * (bad_device) left "VK_FAKE_not_a_real_device_extension" in it -- confirmed
+     * still present after the successful "empty" creation right above this. */
+    device = create_device(NULL);
+    CHECK(device != NULL);
+    CHECK(strstr(SDL_GetError(), "VK_FAKE_not_a_real_device_extension") == NULL);
+    if (device)
+        SDL_DestroyGPUDevice(device);
+
     SDL_Quit();
     if (g_failures) {
         printf("%d check(s) FAILED\n", g_failures);
