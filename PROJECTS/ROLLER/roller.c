@@ -1,4 +1,7 @@
 #include "roller.h"
+#if defined(ROLLER_VR_BUILD)
+#include "vr_diag.h"
+#endif
 #include "scene_render_gpu.h"
 #include "crt_filter.h"
 #include "rollersound.h"
@@ -779,6 +782,10 @@ int InitSDL(char *whiplash_root, const char *midi_root)
     return 1;
   }
   ROLLERInstallPlatformLogSink();
+#if defined(ROLLER_VR_BUILD)
+  if (g_bVRMode)
+    vr_diag_init(); // roller-vr.log next to the exe: stdout, stderr and SDL_Log
+#endif
 
 #if defined(IS_WASM)
   SDL_strlcpy(whiplash_root, "/persist", 260);

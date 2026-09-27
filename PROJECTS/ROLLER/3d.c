@@ -33,6 +33,7 @@
 #endif
 #if defined(ROLLER_VR_BUILD)
 #include "vr_runtime.h"
+#include "vr_diag.h"
 #endif
 #include <SDL3/SDL.h>
 #if defined(__EMSCRIPTEN__)
@@ -3209,10 +3210,8 @@ int main(int argc, const char **argv, const char **envp)
    * (see vr_init()'s own comment in vr_runtime.c), so this is the earliest
    * point that device is guaranteed to exist. */
   if (g_bVRMode) {
-    if (!vr_init()) {
-      ErrorBoxExit("Couldn't initialize VR runtime");
-      return 1;
-    }
+    if (!vr_init())
+      vr_diag_fatal("Couldn't initialize the VR runtime; see roller-vr.log next to the executable.");
   }
 #endif
 

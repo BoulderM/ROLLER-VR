@@ -285,7 +285,11 @@ pub fn build(b: *std.Build) void {
         });
         vr_exe_mod.addCSourceFiles(.{
             .flags = c_flags,
-            .files = &.{"PROJECTS/ROLLER/vr_runtime.c"},
+            .files = &.{
+                "PROJECTS/ROLLER/vr_runtime.c",
+                "PROJECTS/ROLLER/vr_diag.c",
+                "PROJECTS/ROLLER/vr_log.c",
+            },
         });
 
         const vr_exe = b.addExecutable(.{
