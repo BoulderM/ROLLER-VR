@@ -41,7 +41,7 @@ static void SDLCALL vr_diag_sdl_log(void *userdata, int category, SDL_LogPriorit
 static bool vr_diag_verify_log(const char *path, char *out_detail, size_t out_detail_size)
 {
     vr_log_line("INFO", "SELF-TEST marker line");
-    int flush_rc = fflush(stderr);
+    bool flush_ok = vr_log_flush();
     int flush_errno = errno;
 
     FILE *check = fopen(path, "rb");
@@ -57,13 +57,13 @@ static bool vr_diag_verify_log(const char *path, char *out_detail, size_t out_de
         fclose(check);
     }
 
-    if (flush_rc == 0 && found)
+    if (flush_ok && found)
         return true;
 
     snprintf(out_detail, out_detail_size,
-        "fflush(stderr) returned %d (errno=%d: %s); re-reading \"%s\" found %ld byte(s) "
+        "vr_log_flush() %s (errno=%d: %s); re-reading \"%s\" found %ld byte(s) "
         "on disk, self-test marker %s.",
-        flush_rc, flush_errno, strerror(flush_errno), path, size,
+        flush_ok ? "succeeded" : "FAILED", flush_errno, strerror(flush_errno), path, size,
         found ? "present" : "NOT present");
     return false;
 }

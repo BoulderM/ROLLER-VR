@@ -1,8 +1,4 @@
 /* PROJECTS/ROLLER/vr_log.c -- see vr_log.h */
-#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
-#define _POSIX_C_SOURCE 200809L /* fileno(), dup(), dup2() under strict -std=c11 */
-#endif
-
 #include "vr_log.h"
 
 #include <stdarg.h>
@@ -10,23 +6,7 @@
 #include <string.h>
 #include <time.h>
 
-#if defined(_WIN32)
-#include <io.h>
-#define VR_DUP   _dup
-#define VR_DUP2  _dup2
-#define VR_CLOSE _close
-#define VR_FILENO _fileno
-#else
-#include <unistd.h>
-#define VR_DUP   dup
-#define VR_DUP2  dup2
-#define VR_CLOSE close
-#define VR_FILENO fileno
-#endif
-
 static FILE *s_file = NULL;
-static int s_saved_out = -1;
-static int s_saved_err = -1;
 static struct timespec s_start;
 
 bool vr_log_open(const char *path)
@@ -40,37 +20,24 @@ bool vr_log_open(const char *path)
     if (!f)
         return false;
 
-#if defined(_WIN32)
-    /* roller-vr.exe is a GUI-subsystem process; started with no console attached
-     * (the normal case), fds 0/1/2 have no valid OS handle behind them at all, so
-     * VR_DUP()/VR_DUP2() on them below is unreliable (confirmed against mingw-w64/
-     * MSVC GUI-app reports: dup2 onto an unattached stdio fd does not reliably make
-     * later fprintf(stdout/stderr, ...) calls reach the target). freopen() onto the
-     * null device first gives both streams a real, valid fd to redirect from, the
-     * same state a console-attached process already has -- the block below then
-     * behaves identically whether or not a console was actually present. Loses the
-     * (minor, GUI-only) ability to fall back to a console on failure below; the
-     * fatal-error path still reaches the user via a message box (vr_diag_fatal). */
-    if (!freopen("NUL", "w", stdout) || !freopen("NUL", "w", stderr)) {
-        fclose(f);
-        return false;
-    }
-#endif
-
-    fflush(stdout);
-    fflush(stderr);
-    s_saved_out = VR_DUP(1);
-    s_saved_err = VR_DUP(2);
-    if (VR_DUP2(VR_FILENO(f), 1) < 0 || VR_DUP2(VR_FILENO(f), 2) < 0) {
-        if (s_saved_out >= 0) { VR_DUP2(s_saved_out, 1); VR_CLOSE(s_saved_out); }
-        if (s_saved_err >= 0) { VR_DUP2(s_saved_err, 2); VR_CLOSE(s_saved_err); }
-        s_saved_out = s_saved_err = -1;
-        fclose(f);
-        return false;
-    }
-    /* Nothing is pending (flushed above), so switching to unbuffered is safe. */
-    setvbuf(stdout, NULL, _IONBF, 0);
-    setvbuf(stderr, NULL, _IONBF, 0);
+    /* Unbuffered: each vr_log_line()/vr_log_flush() call reaches the OS
+     * immediately, so a crash or exit() right after loses nothing. (An
+     * earlier version of this file instead dup2()'d the process's own
+     * stdout/stderr file descriptors onto this file, to also catch any
+     * stray raw printf()/fprintf(stderr, ...) elsewhere in the codebase.
+     * That relied on dup2() behaving a specific way for a GUI-subsystem
+     * process with no console; on real Windows hardware with this
+     * toolchain's CRT it produced a log file that opened fine but silently
+     * received zero bytes -- EBADF out of fflush(stderr) moments after a
+     * successful dup2(), confirmed not reproducible under Wine, so it's
+     * specific to the genuine Windows CRT, not a logic bug in the dup2
+     * sequence itself (2026-10-02). Writing directly to this FILE* instead
+     * avoids the whole class of platform-specific fd-redirection quirks;
+     * the cost is that stray raw printf/fprintf calls outside vr_log_line()
+     * and the SDL_Log hook no longer land in the log, which in practice
+     * isn't a real loss -- every VR startup/runtime diagnostic already goes
+     * through vr_log_line() or SDL_Log directly, never raw stdio.) */
+    setvbuf(f, NULL, _IONBF, 0);
 
     s_file = f;
     timespec_get(&s_start, TIME_UTC);
@@ -81,11 +48,6 @@ void vr_log_close(void)
 {
     if (!s_file)
         return;
-    fflush(stdout);
-    fflush(stderr);
-    if (s_saved_out >= 0) { VR_DUP2(s_saved_out, 1); VR_CLOSE(s_saved_out); }
-    if (s_saved_err >= 0) { VR_DUP2(s_saved_err, 2); VR_CLOSE(s_saved_err); }
-    s_saved_out = s_saved_err = -1;
     fclose(s_file);
     s_file = NULL;
 }
@@ -93,6 +55,13 @@ void vr_log_close(void)
 bool vr_log_is_open(void)
 {
     return s_file != NULL;
+}
+
+bool vr_log_flush(void)
+{
+    if (!s_file)
+        return false;
+    return fflush(s_file) == 0;
 }
 
 size_t vr_log_format_line(char *out, size_t out_size, long elapsed_ms,
@@ -141,5 +110,9 @@ void vr_log_line(const char *level, const char *fmt, ...)
                             (now.tv_nsec - s_start.tv_nsec) / 1000000);
     }
     vr_log_format_line(line, sizeof(line), elapsed_ms, level, message);
-    fputs(line, stderr);
+    /* Falls back to stderr if the log isn't open (e.g. called before
+     * vr_log_open() or after a failed open) -- harmless on Windows (writes
+     * to nothing, since this is a GUI-subsystem process with no console),
+     * and still useful on Linux/console builds and manual testing. */
+    fputs(line, s_file ? s_file : stderr);
 }

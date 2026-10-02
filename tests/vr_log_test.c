@@ -55,19 +55,19 @@ static char *slurp(const char *path)
     return data;
 }
 
-static void test_open_captures_stdout_stderr_and_restores(void)
+static void test_open_writes_lines_and_flushes(void)
 {
     const char *path = "vr_log_test.tmp.log";
     remove(path);
 
     CHECK(!vr_log_is_open());
+    CHECK(!vr_log_flush()); /* flush while not open reports failure */
     CHECK(vr_log_open(path));
     CHECK(vr_log_is_open());
     CHECK(vr_log_open(path)); /* second open is a no-op */
 
     vr_log_line("WARN", "x=%d", 7);
-    fprintf(stderr, "raw stderr line\n");
-    printf("raw stdout line\n");
+    CHECK(vr_log_flush());
     vr_log_close();
     CHECK(!vr_log_is_open());
     vr_log_close(); /* closing twice is safe */
@@ -76,14 +76,12 @@ static void test_open_captures_stdout_stderr_and_restores(void)
     CHECK(text != NULL);
     if (text) {
         CHECK(strstr(text, "WARN x=7\n") != NULL);
-        CHECK(strstr(text, "raw stderr line\n") != NULL);
-        CHECK(strstr(text, "raw stdout line\n") != NULL);
         free(text);
     }
     remove(path);
 }
 
-static void test_open_failure_leaves_streams_alone(void)
+static void test_open_failure_leaves_nothing_open(void)
 {
     CHECK(!vr_log_open("/nonexistent-dir-for-vr-log-test/x.log"));
     CHECK(!vr_log_is_open());
@@ -95,8 +93,8 @@ int main(void)
 {
     test_format_basic();
     test_format_truncates_but_keeps_newline();
-    test_open_captures_stdout_stderr_and_restores();
-    test_open_failure_leaves_streams_alone();
+    test_open_writes_lines_and_flushes();
+    test_open_failure_leaves_nothing_open();
 
     if (g_failures) {
         printf("%d check(s) FAILED\n", g_failures);
