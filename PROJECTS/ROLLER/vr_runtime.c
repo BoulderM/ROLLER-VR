@@ -425,29 +425,61 @@ bool vr_init(void)
     }
     vr_log_line("INFO", "OpenXR session created");
 
-    /* Log what the runtime offers: the eye swapchains below are created as
-     * VK_FORMAT_R8G8B8A8_UNORM, which a runtime may not list (SteamVR prefers sRGB). */
+    /* Pick a swapchain format the runtime actually lists, instead of assuming
+     * VK_FORMAT_R8G8B8A8_UNORM (confirmed on the user's real hardware,
+     * 2026-10-02: SteamVR's compositor doesn't list that at all, only
+     * VK_FORMAT_R8G8B8A8_SRGB/B8G8R8A8_SRGB among 8-bit formats -- Monado
+     * does list UNORM, which is why this never showed up there). Preferred in
+     * order of how closely they match the resolved eye texture's own
+     * R8G8B8A8_UNORM layout: UNORM is an exact match; R8G8B8A8_SRGB keeps the
+     * same channel order (the game's framebuffer is already gamma-encoded
+     * 8-bit color like any classic raster game, which is what an SRGB-tagged
+     * image expects, so this should display correctly, not just compile);
+     * the B8G8R8A8 variants have R and B swapped relative to the source
+     * texture's byte layout, so vkCmdCopyImage would carry that swap through
+     * unchanged -- last resort, not yet handled, flagged if it's ever picked. */
+    static const VkFormat PREFERRED_SWAPCHAIN_FORMATS[] = {
+        VK_FORMAT_R8G8B8A8_UNORM,
+        VK_FORMAT_R8G8B8A8_SRGB,
+        VK_FORMAT_B8G8R8A8_UNORM,
+        VK_FORMAT_B8G8R8A8_SRGB,
+    };
+    VkFormat swapchain_format = VK_FORMAT_UNDEFINED;
     uint32_t format_count = 0;
     if (XR_SUCCEEDED(xrEnumerateSwapchainFormats(s_session, 0, &format_count, NULL)) && format_count > 0) {
         int64_t *formats = calloc(format_count, sizeof(int64_t));
         if (formats && XR_SUCCEEDED(xrEnumerateSwapchainFormats(s_session, format_count, &format_count, formats))) {
             char list[512] = "";
-            bool has_unorm = false;
             for (uint32_t i = 0; i < format_count; i++) {
                 char one[24];
                 snprintf(one, sizeof(one), "%s%lld", i ? " " : "", (long long)formats[i]);
                 if (strlen(list) + strlen(one) < sizeof(list))
                     strcat(list, one);
-                if (formats[i] == (int64_t)VK_FORMAT_R8G8B8A8_UNORM)
-                    has_unorm = true;
             }
             vr_log_line("INFO", "runtime swapchain formats (VkFormat values): %s", list);
-            if (!has_unorm)
-                vr_log_line("WARN", "the runtime does not list VK_FORMAT_R8G8B8A8_UNORM (%d), which the eye "
-                                    "swapchains use; xrCreateSwapchain is likely to fail",
-                            (int)VK_FORMAT_R8G8B8A8_UNORM);
+
+            for (size_t p = 0; p < SDL_arraysize(PREFERRED_SWAPCHAIN_FORMATS) && swapchain_format == VK_FORMAT_UNDEFINED; p++) {
+                for (uint32_t i = 0; i < format_count; i++) {
+                    if (formats[i] == (int64_t)PREFERRED_SWAPCHAIN_FORMATS[p]) {
+                        swapchain_format = PREFERRED_SWAPCHAIN_FORMATS[p];
+                        break;
+                    }
+                }
+            }
+            if (swapchain_format == VK_FORMAT_B8G8R8A8_UNORM || swapchain_format == VK_FORMAT_B8G8R8A8_SRGB)
+                vr_log_line("WARN", "picked VkFormat %d, which has R/B swapped relative to the game's "
+                                    "R8G8B8A8 framebuffer -- colors will likely look wrong until the "
+                                    "eye copy swaps channels to match", (int)swapchain_format);
+            else if (swapchain_format != VK_FORMAT_UNDEFINED)
+                vr_log_line("INFO", "picked swapchain VkFormat %d", (int)swapchain_format);
         }
         free(formats);
+    }
+    if (swapchain_format == VK_FORMAT_UNDEFINED) {
+        fail("the OpenXR runtime lists no swapchain format this code knows how to use "
+             "(wanted R8G8B8A8_UNORM, R8G8B8A8_SRGB, B8G8R8A8_UNORM or B8G8R8A8_SRGB; "
+             "see the logged list above)");
+        return false;
     }
 
     /* --- 5. Enumerate the view configuration (expect 2 views for stereo) --- */
@@ -481,7 +513,6 @@ bool vr_init(void)
                 s_view_configs[0].recommendedImageRectHeight);
 
     /* --- 6. Create one swapchain per eye --- */
-    VkFormat swapchain_format = VK_FORMAT_R8G8B8A8_UNORM;
     s_swapchains = calloc(s_view_count, sizeof(XrSwapchain));
     for (Uint32 i = 0; i < s_view_count; i++) {
         XrSwapchainCreateInfo swapchain_create_info = {
