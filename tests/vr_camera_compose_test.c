@@ -134,6 +134,74 @@ int main(void)
         check_close("(c) direction.z == cockpit right axis", d[2]/dist, V[2][0]);
     }
 
+    /* (c2) No-double-count check for vr_runtime.c's build_mvp_vr_eye_projection():
+     * that function takes an ALREADY fully eye-composed camera (base_cam/
+     * base_proj, post-Task-2) and builds a view matrix from it via
+     * combined_rot = vr_mat3_flip_row2(vr_mat3_transpose(base_proj->view))
+     * and a translation of -combined_rot * (viewX,viewY,viewZ) -- with NO
+     * further pose composition of its own (see that function's own
+     * comment). Reimplements exactly that view-matrix fragment here (same
+     * shared helpers, not a separate copy of the math) fed with case (c)'s
+     * own left/right composed cameras (identity head orientation, cockpit
+     * turned 90deg, eyes at +-0.0315m local X), then recovers each eye's
+     * world position back out of the resulting view matrix's rotation +
+     * translation (eye = -combined_rotᵗ * translation, valid since
+     * combined_rot is orthogonal). If build_mvp_vr_eye_projection() (or a
+     * future edit to it) ever re-composed the eye pose a second time on
+     * top of the already-composed camera -- the exact bug class this task
+     * exists to retire -- the recovered separation below would come out
+     * as 2x IPD instead of 1x. */
+    {
+        float V[3][3]; mat3_rot_y(90.0f * (float)M_PI / 180.0f, V);
+        float zero_pos[3] = {0, 0, 0};
+        float left_rot[3][3], left_pos[3], right_rot[3][3], right_pos[3];
+        vr_camera_compose(V, zero_pos, 0, 0, 0, 1, -0.0315f, 0, 0, 100.0f, left_rot, left_pos);
+        vr_camera_compose(V, zero_pos, 0, 0, 0, 1,  0.0315f, 0, 0, 100.0f, right_rot, right_pos);
+
+        float recovered_left[3], recovered_right[3];
+        for (int eye = 0; eye < 2; eye++) {
+            const float (*rot)[3] = eye == 0 ? left_rot : right_rot;
+            const float *pos = eye == 0 ? left_pos : right_pos;
+            float *recovered = eye == 0 ? recovered_left : recovered_right;
+
+            /* Exactly build_mvp_vr_eye_projection()'s r_true/combined_rot/
+             * translation construction, given this eye's ALREADY composed
+             * rot/pos as base_proj->view/base_cam->viewX,Y,Z. */
+            float r_true[3][3];
+            vr_mat3_transpose(rot, r_true);
+            float combined_rot[3][3];
+            vr_mat3_flip_row2(r_true, combined_rot);
+            float translation[3];
+            for (int r = 0; r < 3; r++)
+                translation[r] = -(combined_rot[r][0] * pos[0]
+                                  + combined_rot[r][1] * pos[1]
+                                  + combined_rot[r][2] * pos[2]);
+
+            /* eye_world = -combined_rotᵗ * translation. */
+            for (int c = 0; c < 3; c++)
+                recovered[c] = -(combined_rot[0][c] * translation[0]
+                                + combined_rot[1][c] * translation[1]
+                                + combined_rot[2][c] * translation[2]);
+        }
+
+        check_close("(c2) recovered left_pos.x", recovered_left[0], left_pos[0]);
+        check_close("(c2) recovered left_pos.y", recovered_left[1], left_pos[1]);
+        check_close("(c2) recovered left_pos.z", recovered_left[2], left_pos[2]);
+        check_close("(c2) recovered right_pos.x", recovered_right[0], right_pos[0]);
+        check_close("(c2) recovered right_pos.y", recovered_right[1], right_pos[1]);
+        check_close("(c2) recovered right_pos.z", recovered_right[2], right_pos[2]);
+
+        float d[3] = {
+            recovered_right[0] - recovered_left[0],
+            recovered_right[1] - recovered_left[1],
+            recovered_right[2] - recovered_left[2],
+        };
+        float dist = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        check_close("(c2) view-matrix-recovered eye separation == 1x IPD * meters_to_world "
+                    "(not 2x -- would indicate double-counting)",
+                    dist, 0.063f * 100.0f);
+    }
+
     /* (d) Angle round-trip: build a known rotation via the SAME formula
      * calculatetransform() uses (transfrm.c:43-57, with iTilt=0 for
      * simplicity -- yaw/pitch only), extract angles back, confirm they

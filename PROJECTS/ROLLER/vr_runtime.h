@@ -35,21 +35,21 @@ int vr_exit_status(void);
  * no last-known-good view to fall back to. */
 bool vr_locate_views(XrTime predicted_display_time, XrView out_views[2]);
 
-/* Builds a full model-view-projection matrix for one eye: the game's normal
- * car-follow camera (base_cam/base_proj, unchanged, computed elsewhere by
- * calculateview()/calculatetransform()) composed with that eye's live
- * head-tracked pose (xr_view), projected with the asymmetric FOV OpenXR
- * reports for the eye (xr_view->fov). xr_view is one eye's XrView from
- * xrLocateViews: its pose already includes the runtime's IPD, so no extra
- * per-eye offset is applied (and it is the same pose vr_run_frame() submits
- * in the composition layer). mvp_out uses the same column-major convention as
- * scene_render_gpu.c's build_mvp() output. vpW/vpH are currently unused
- * (reserved for future comfort/resolution tuning). */
-void build_mvp_vr_eye(float mvp_out[16],
-                       const SceneRenderCamera *base_cam,
-                       const SceneRenderProjection *base_proj,
-                       const XrView *xr_view,
-                       int vpW, int vpH);
+/* Builds a full model-view-projection matrix for one eye: base_cam/base_proj
+ * (computed elsewhere by calculateview()/calculatetransform(), called with
+ * this eye's pose active via vr_camera_compose_set_active_eye() -- see
+ * vr_present_stereo_frame()) already carry that eye's FULLY composed
+ * head-tracked camera, rotation and position alike; this function does not
+ * compose any pose of its own. It only builds the asymmetric-FOV projection
+ * OpenXR reports for the eye (fov) on top of that already-composed camera --
+ * the one piece of VR eye rendering build_mvp()'s symmetric-FOV construction
+ * (scene_render_gpu.c) can't express, since HMD lenses are rarely centered.
+ * mvp_out uses the same column-major convention as scene_render_gpu.c's
+ * build_mvp() output. */
+void build_mvp_vr_eye_projection(float mvp_out[16],
+                                  const SceneRenderCamera *base_cam,
+                                  const SceneRenderProjection *base_proj,
+                                  const XrFovf *fov);
 
 /* --- Per-frame execution (Phase 2 game-loop integration) ----------------- */
 
