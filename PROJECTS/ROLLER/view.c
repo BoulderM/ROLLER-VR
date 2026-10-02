@@ -10,6 +10,9 @@
 #include <SDL3/SDL.h>
 #include <math.h>
 #include <float.h>
+#if defined(ROLLER_VR_BUILD)
+#include "vr_camera_compose.h"
+#endif
 //-------------------------------------------------------------------------------------------------
 
 #define NOCLIP_MOVE_SPEED       9000.0f
@@ -419,7 +422,7 @@ LABEL_9:
     if (iViewMode == 2)                       // Check if chase view mode
     {
       newchaseview(iCarIdx, iChaseCamIdx);      // Handle chase view - call specialized function
-      return;
+      goto vr_compose_exit;
     }
     fCameraOffsetY = ext_y * 64.0f;              // Scale camera offsets and apply to display position
     fCameraOffsetZ = ext_z * 32.0f;
@@ -442,7 +445,7 @@ LABEL_9:
         worlddirn = Car[iCarIndex2].nYaw;       // Car off-track - use raw orientation values
         worldelev = iElevation2;
         worldtilt = iTilt;
-        return;
+        goto vr_compose_exit;
       }
     } else {
       calculatetransform(Car[iCarIdx].nCurrChunk, Car[iCarIdx].nYaw, iElevation2, iTilt, Car[iCarIdx].pos.fX, Car[iCarIdx].pos.fY, Car[iCarIdx].pos.fZ, fPosX, fPosY, fPosZ);// Driver view - calculate transformation matrix
@@ -451,7 +454,7 @@ LABEL_9:
         worlddirn = Car[iCarIdx].nYaw;
         worldelev = iElevation2;
         worldtilt = iTilt;
-        return;
+        goto vr_compose_exit;
       }
     }
     getworldangles(Car[iCarIndex2].nYaw, iElevation2, iTilt, iCurrChunk, &worlddirn, &worldelev, &worldtilt);// Convert car angles to world coordinates
@@ -691,6 +694,23 @@ LABEL_9:
     worldelev = velevation;
     worldtilt = vtilt;
   }
+vr_compose_exit:
+#if defined(ROLLER_VR_BUILD)
+  {
+    float rot[3][3] = { {vk1, vk2, vk3}, {vk4, vk5, vk6}, {vk7, vk8, vk9} };
+    float pos[3] = { viewx, viewy, viewz };
+    int iVRYaw, iVRPitch, iVRRoll;
+    if (vr_camera_compose_apply(rot, pos, &iVRYaw, &iVRPitch, &iVRRoll)) {
+      vk1 = rot[0][0]; vk2 = rot[0][1]; vk3 = rot[0][2];
+      vk4 = rot[1][0]; vk5 = rot[1][1]; vk6 = rot[1][2];
+      vk7 = rot[2][0]; vk8 = rot[2][1]; vk9 = rot[2][2];
+      viewx = pos[0]; viewy = pos[1]; viewz = pos[2];
+      worlddirn = iVRYaw;
+      worldelev = iVRPitch;
+      worldtilt = iVRRoll;
+    }
+  }
+#endif
 }
 
 //-------------------------------------------------------------------------------------------------

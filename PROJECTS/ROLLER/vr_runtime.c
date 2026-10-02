@@ -12,6 +12,7 @@
 #include "vr_ext_list.h"
 #include "vr_log.h"
 #include "vr_session_fsm.h"
+#include "vr_camera_compose.h"
 
 #include <SDL3/SDL.h>
 
@@ -1311,7 +1312,20 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
          * fully overwritten -- not accumulated -- from this call's own
          * inputs each time) -- calling it here and then again, redundantly,
          * inside draw_road() itself produces the exact same globals both
-         * times and has no other side effect. */
+         * times and has no other side effect.
+         *
+         * vr_camera_compose_set_active_eye()/_clear_active_eye() bracket
+         * BOTH this pre-call AND draw_road()'s own internal, redundant
+         * calculateview() call below -- calculateview()'s own post-step
+         * (view.c) composes this eye's head pose into vk1..vk9/viewx,y,z
+         * every time it's invoked while the eye pose is active, so both
+         * calls here end up with the same composed, head-tracked camera. */
+        vr_camera_compose_set_active_eye(
+            s_frame_views[i].pose.orientation.x, s_frame_views[i].pose.orientation.y,
+            s_frame_views[i].pose.orientation.z, s_frame_views[i].pose.orientation.w,
+            s_frame_views[i].pose.position.x, s_frame_views[i].pose.position.y,
+            s_frame_views[i].pose.position.z,
+            VR_METERS_TO_WORLD); /* Task 6 replaces this constant with a computed value */
         calculateview(iDriveView, uiViewType, 0);
         /* task-7-round2 Minor: draw_road()'s own internal calculateview()
          * call (3d.c draw_road()) is immediately followed by
@@ -1357,6 +1371,7 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
          * renderer instances. The VR-eye override set above is now active
          * BEFORE any of this call's cars are queued. */
         draw_road(pMainScrPtr, uiViewType, iDriveView, -1, 0);
+        vr_camera_compose_clear_active_eye();
 
         Uint32 image_index = 0;
         XrSwapchainImageAcquireInfo acquire_info = { .type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
