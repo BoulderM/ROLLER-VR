@@ -9,7 +9,6 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include "vr_camera_compose.h"
 
 #define EPS 1e-3f
@@ -105,6 +104,16 @@ int main(void)
 
         float V2[3][3]; mat3_rot_y(90.0f * (float)M_PI / 180.0f, V2);
         check_matches_old_combined_rot("(b) yaw30/turned-cockpit", V2, 0, qy, 0, qw);
+    }
+
+    /* (b2) Pitch-up-30deg head pose, identity cockpit: pure pitch rotation
+     * (X-axis) exercises the row/column sign-flip interactions that yaw alone
+     * doesn't touch -- cross-check against the old combined_rot formula. */
+    {
+        float V[3][3]; mat3_identity(V);
+        float theta = 30.0f * (float)M_PI / 180.0f;
+        float qx = sinf(theta / 2.0f), qw = cosf(theta / 2.0f);
+        check_matches_old_combined_rot("(b2) pitch30/identity-cockpit", V, qx, 0, 0, qw);
     }
 
     /* (c) Eye separation: two eyes at +-0.0315m along local X (63mm IPD),
