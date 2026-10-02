@@ -841,7 +841,8 @@ int InitSDL(char *whiplash_root, const char *midi_root)
      * SDL_GPU (patched SDL fork, SDL_GPUVulkanOptions). */
     SDL_GPUVulkanOptions vkOptions;
     if (!vr_prepare_vulkan(&vkOptions))
-      vr_diag_fatal("Couldn't prepare the OpenXR runtime; see roller-vr.log next to the executable.");
+      vr_diag_fatal("Couldn't prepare the OpenXR runtime; see roller-vr.log (next to the executable, "
+                    "or in the per-user app data folder if that location wasn't writable).");
     SDL_PropertiesID gpuProps = SDL_CreateProperties();
     SDL_SetBooleanProperty(gpuProps, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
     SDL_SetBooleanProperty(gpuProps, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, false);
