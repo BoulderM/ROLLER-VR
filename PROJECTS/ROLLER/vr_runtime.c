@@ -229,7 +229,12 @@ bool vr_prepare_vulkan(SDL_GPUVulkanOptions *out_options)
     strncpy(instance_create_info.applicationInfo.applicationName, "ROLLER VR",
             XR_MAX_APPLICATION_NAME_SIZE - 1);
     instance_create_info.applicationInfo.applicationVersion = 1;
-    instance_create_info.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+    /* XR_CURRENT_API_VERSION from our 1.1.63 SDK headers requests core OpenXR
+     * 1.1; SteamVR's runtime only implements 1.0 and rejects that with
+     * XR_ERROR_API_VERSION_UNSUPPORTED (confirmed on the user's real hardware,
+     * 2026-10-02 -- Monado, which does implement 1.1, never showed this).
+     * Nothing here uses any 1.1-only feature, so request 1.0 instead. */
+    instance_create_info.applicationInfo.apiVersion = XR_API_VERSION_1_0;
     instance_create_info.enabledExtensionCount = 1;
     instance_create_info.enabledExtensionNames = enabled_extensions;
 
