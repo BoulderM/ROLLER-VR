@@ -86,21 +86,33 @@ static bool s_frame_open = false;
  * fresh by vr_run_frame() every tick via xrWaitFrame(), same as before. */
 static XrFrameState s_frame_state;
 
+/* These write through vr_log_line() (not raw fprintf(stderr, ...)) because
+ * roller-vr.exe is a GUI-subsystem Windows build with no console: stderr
+ * has no OS handle to write to, so anything not routed through the log file
+ * is invisible on Windows. (An earlier version of vr_log.c redirected the
+ * process's own stdout/stderr onto the log file so plain fprintf(stderr, ...)
+ * calls like these would still land in it; that redirection was removed
+ * 2026-10-02 for being unreliable on real Windows hardware -- see vr_log.c's
+ * header comment -- which is also why these specific calls needed updating:
+ * without the redirection they went nowhere, reproduced 2026-10-02 as a real
+ * SteamVR run whose log went straight from "using XR_KHR_vulkan_enable" to
+ * the generic top-level "Couldn't prepare the OpenXR runtime" with the actual
+ * reason lost.) */
 static bool fail(const char *what)
 {
-    fprintf(stderr, "vr_runtime: %s\n", what);
+    vr_log_line("ERROR", "%s", what);
     return false;
 }
 
 static bool fail_xr(const char *what, XrResult result)
 {
-    fprintf(stderr, "vr_runtime: %s (XrResult=%d)\n", what, (int)result);
+    vr_log_line("ERROR", "%s (XrResult=%d)", what, (int)result);
     return false;
 }
 
 static bool fail_vk(const char *what, VkResult result)
 {
-    fprintf(stderr, "vr_runtime: %s (VkResult=%d)\n", what, (int)result);
+    vr_log_line("ERROR", "%s (VkResult=%d)", what, (int)result);
     return false;
 }
 
@@ -319,7 +331,7 @@ bool vr_init(void)
              "has successfully created the game's GPU device");
         return false;
     }
-    printf("vr_runtime: SDL_GPU driver: %s\n", SDL_GetGPUDeviceDriver(s_gpu));
+    vr_log_line("INFO", "SDL_GPU driver: %s", SDL_GetGPUDeviceDriver(s_gpu));
 
     SDL_PropertiesID gpu_props = SDL_GetGPUDeviceProperties(s_gpu);
     if (!gpu_props) {
@@ -337,8 +349,8 @@ bool vr_init(void)
         fail("SDL_GPU did not expose Vulkan device properties (is this the patched SDL fork? is the active backend Vulkan?)");
         return false;
     }
-    printf("vr_runtime: got VkInstance=%p VkDevice=%p queueFamilyIndex=%u\n",
-           (void *)s_vk_instance, (void *)s_vk_device, s_vk_queue_family_index);
+    vr_log_line("INFO", "got VkInstance=%p VkDevice=%p queueFamilyIndex=%u",
+                (void *)s_vk_instance, (void *)s_vk_device, s_vk_queue_family_index);
 
     /* --- 2. Tell the runtime which physical device we use --- */
     /* Required by the spec before creating a Vulkan-backed session even though
@@ -406,7 +418,7 @@ bool vr_init(void)
         fail_xr("xrCreateSession failed", xr_result);
         return false;
     }
-    printf("vr_runtime: OpenXR session created\n");
+    vr_log_line("INFO", "OpenXR session created");
 
     /* Log what the runtime offers: the eye swapchains below are created as
      * VK_FORMAT_R8G8B8A8_UNORM, which a runtime may not list (SteamVR prefers sRGB). */
@@ -459,9 +471,9 @@ bool vr_init(void)
         fail_xr("xrEnumerateViewConfigurationViews failed", xr_result);
         return false;
     }
-    printf("vr_runtime: view count = %u, view[0] recommended %ux%u\n",
-           s_view_count, s_view_configs[0].recommendedImageRectWidth,
-           s_view_configs[0].recommendedImageRectHeight);
+    vr_log_line("INFO", "view count = %u, view[0] recommended %ux%u",
+                s_view_count, s_view_configs[0].recommendedImageRectWidth,
+                s_view_configs[0].recommendedImageRectHeight);
 
     /* --- 6. Create one swapchain per eye --- */
     VkFormat swapchain_format = VK_FORMAT_R8G8B8A8_UNORM;
@@ -484,7 +496,7 @@ bool vr_init(void)
             return false;
         }
     }
-    printf("vr_runtime: created %u swapchains\n", s_view_count);
+    vr_log_line("INFO", "created %u swapchains", s_view_count);
 
     /* --- 6b. Create a reference space for the projection layer. A composition
      * layer's `space` must reference a real, previously-created XrSpace. LOCAL
@@ -652,8 +664,8 @@ static int s_vr_empty_frames = 0;   /* ticks submitted with layerCount = 0 */
 
 void vr_shutdown(void)
 {
-    fprintf(stderr, "vr_runtime: shutdown (frames with layer=%d, empty frames=%d)\n",
-            s_vr_frames_presented, s_vr_empty_frames);
+    vr_log_line("INFO", "shutdown (frames with layer=%d, empty frames=%d)",
+                s_vr_frames_presented, s_vr_empty_frames);
     /* s_gpu is the game's own shared GPU device (see vr_init()'s comment
      * above), not one this runtime owns -- its lifecycle belongs entirely
      * to InitSDL()/ShutdownSDL() (roller.c). vr_shutdown() must wait for it
@@ -737,8 +749,8 @@ bool vr_locate_views(XrTime predicted_display_time, XrView out_views[2])
     Uint32 out_count = 0;
     XrResult xr_result = xrLocateViews(s_session, &locate_info, &view_state, 2, &out_count, views);
     if (XR_FAILED(xr_result) || out_count < 2) {
-        fprintf(stderr, "vr_runtime: xrLocateViews failed or returned <2 views (XrResult=%d, count=%u)\n",
-                (int)xr_result, out_count);
+        vr_log_line("ERROR", "xrLocateViews failed or returned <2 views (XrResult=%d, count=%u)",
+                    (int)xr_result, out_count);
         if (!s_have_last_good_views) return false;
         memcpy(out_views, s_last_good_views, sizeof(s_last_good_views));
         return true;
@@ -1144,19 +1156,19 @@ bool vr_run_frame(void)
     if (s_frame_view_count_for_layer > 0) {
         s_vr_frames_presented++;
         if (s_vr_frames_presented == 1 || s_vr_frames_presented % 60 == 0)
-            fprintf(stderr, "vr_runtime: frame %d submitted (views=%u layerCount=1) "
-                            "view[0] pos=(%.3f,%.3f,%.3f) ori=(%.3f,%.3f,%.3f,%.3f)\n",
-                    s_vr_frames_presented, (unsigned)s_frame_view_count_for_layer,
-                    s_frame_views[0].pose.position.x, s_frame_views[0].pose.position.y,
-                    s_frame_views[0].pose.position.z,
-                    s_frame_views[0].pose.orientation.x, s_frame_views[0].pose.orientation.y,
-                    s_frame_views[0].pose.orientation.z, s_frame_views[0].pose.orientation.w);
+            vr_log_line("INFO", "frame %d submitted (views=%u layerCount=1) "
+                                "view[0] pos=(%.3f,%.3f,%.3f) ori=(%.3f,%.3f,%.3f,%.3f)",
+                        s_vr_frames_presented, (unsigned)s_frame_view_count_for_layer,
+                        s_frame_views[0].pose.position.x, s_frame_views[0].pose.position.y,
+                        s_frame_views[0].pose.position.z,
+                        s_frame_views[0].pose.orientation.x, s_frame_views[0].pose.orientation.y,
+                        s_frame_views[0].pose.orientation.z, s_frame_views[0].pose.orientation.w);
         /* --vr-frames N: after N frames actually reached the compositor, ask
          * the game to quit through its own shutdown path (same flags the
          * headless snapshot mode uses), so frontend_shutdown_finish() ->
          * vr_shutdown() runs exactly as for a user-initiated quit. */
         if (g_iVRMaxFrames > 0 && s_vr_frames_presented >= g_iVRMaxFrames && !quit_game) {
-            fprintf(stderr, "vr_runtime: --vr-frames %d reached, requesting quit\n", g_iVRMaxFrames);
+            vr_log_line("INFO", "--vr-frames %d reached, requesting quit", g_iVRMaxFrames);
             quit_game = 1;
             racing = 0;
         }
@@ -1172,10 +1184,10 @@ bool vr_run_frame(void)
     } else {
         s_vr_empty_frames++;
         if (s_vr_empty_frames <= 10)
-            fprintf(stderr, "vr_runtime: tick submitted with layerCount=0 (empty #%d, after %d presented frames, "
-                            "shouldRender=%d, frontend state=%d, racing=%d)\n",
-                    s_vr_empty_frames, s_vr_frames_presented, (int)s_frame_state.shouldRender,
-                    (int)eFrontendCurrentState, (int)racing);
+            vr_log_line("INFO", "tick submitted with layerCount=0 (empty #%d, after %d presented frames, "
+                                "shouldRender=%d, frontend state=%d, racing=%d)",
+                        s_vr_empty_frames, s_vr_frames_presented, (int)s_frame_state.shouldRender,
+                        (int)eFrontendCurrentState, (int)racing);
     }
 
     return keep_running;
@@ -1342,8 +1354,8 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
             XrSwapchainImageReleaseInfo release_info = { .type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
             XrResult release_result = xrReleaseSwapchainImage(s_swapchains[i], &release_info);
             if (XR_FAILED(release_result)) {
-                fprintf(stderr, "vr_runtime: xrReleaseSwapchainImage after a failed xrWaitSwapchainImage "
-                                 "also failed as expected (XrResult=%d)\n", (int)release_result);
+                vr_log_line("WARN", "xrReleaseSwapchainImage after a failed xrWaitSwapchainImage "
+                                    "also failed as expected (XrResult=%d)", (int)release_result);
             }
             return;
         }
@@ -1395,8 +1407,8 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
         VkImage resolved_vk_image = (VkImage)SDL_GetPointerProperty(
             tex_props, SDL_PROP_GPU_TEXTURE_VULKAN_IMAGE_POINTER, NULL);
         if (!resolved_vk_image) {
-            fprintf(stderr, "vr_runtime: SDL_GetGPUTextureProperties did not expose a VkImage "
-                             "for the resolved eye texture (is this the patched SDL fork?)\n");
+            vr_log_line("ERROR", "SDL_GetGPUTextureProperties did not expose a VkImage "
+                                 "for the resolved eye texture (is this the patched SDL fork?)");
             XrSwapchainImageReleaseInfo release_info = { .type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
             xrReleaseSwapchainImage(s_swapchains[i], &release_info);
             return;
