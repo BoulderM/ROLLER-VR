@@ -640,6 +640,8 @@ static void print_usage(FILE *f, const char *argv0)
   cli_fprintf(f, " --vr-meters-to-world V  with --vr: world units per meter (default: derived from the car model)\n");
   cli_fprintf(f, " --vr-fake-head          with --vr: scripted head-pose sweep instead of the headset pose (testing)\n");
   cli_fprintf(f, " --vr-eye-dump-dir DIR   with --vr: write each eye's rendered frame to DIR as PNG every 90 frames\n");
+  cli_fprintf(f, " --vr-eye-dump-every N   with --vr-eye-dump-dir: dump every N presented frames instead of 90\n");
+  cli_fprintf(f, " --vr-eye-dump-from F    with --vr-eye-dump-dir: no dumps before presented frame F\n");
 #endif
   cli_fprintf(f, " --track-path PATH       load a track directly from an absolute path\n");
   cli_fprintf(f, " --track-asset-root DIR  resolve direct-track assets from this document root first\n");
@@ -3090,6 +3092,24 @@ int main(int argc, const char **argv, const char **envp)
         consumed = 2;
       } else {
         cli_fprintf(stderr, "ERROR: '--vr-eye-dump-dir' needs an argument\n");
+        return 1;
+      }
+    } else if (strcmp(argv[i], "--vr-eye-dump-every") == 0 || strcmp(argv[i], "--vr-eye-dump-from") == 0) {
+      int bEvery = strcmp(argv[i], "--vr-eye-dump-every") == 0;
+      if (i + 1 < argc) {
+        char *pEnd = NULL;
+        long lValue = strtol(argv[i + 1], &pEnd, 10);
+        if (!pEnd || *pEnd != '\0' || lValue < (bEvery ? 1 : 0) || lValue > 0x7FFFFFFF) {
+          cli_fprintf(stderr, "ERROR: '%s' expects a %s integer\n", argv[i], bEvery ? "positive" : "non-negative");
+          return 1;
+        }
+        if (bEvery)
+          g_iVREyeDumpEvery = (int)lValue;
+        else
+          g_iVREyeDumpFrom = (int)lValue;
+        consumed = 2;
+      } else {
+        cli_fprintf(stderr, "ERROR: '%s' needs an argument\n", argv[i]);
         return 1;
       }
 #endif

@@ -35,6 +35,7 @@
 #include "car.h"       /* Car[], CarBox, numcars -- vr_resolve_meters_to_world(), periodic diag log */
 #include "drawtrk3.h"  /* TrackSize -- periodic diag log (chunk count) */
 #include "building.h"  /* NumVisibleBuildings -- periodic diag log (building count) */
+#include "loadtrak.h"   /* TRAK_LEN -- far-plane diag (track chunks beyond the eye far plane) */
 
 static SDL_GPUDevice *s_gpu;
 static VkInstance s_vk_instance;
@@ -893,6 +894,38 @@ float vr_resolve_meters_to_world(void)
     return s_cached_scale;
 }
 
+/* The eye projection's far clip plane, in world units (not meters). */
+#define VR_EYE_FAR_PLANE_WU 100000.0f
+
+/* Far-plane diag (headset-free pop-in check): for eye 0's fully composed
+ * camera, how many track-chunk centres lie in front of the eye but beyond
+ * VR_EYE_FAR_PLANE_WU (so the eye's far plane clips them), and the deepest
+ * chunk-centre depth. Filled after eye 0's draw_road(), logged with each
+ * eye dump and in the periodic frame line. */
+static int   s_diag_chunks_in_front = 0;
+static int   s_diag_chunks_beyond_far = 0;
+static float s_diag_max_chunk_depth = 0.0f;
+
+static void vr_diag_far_plane_chunks(void)
+{
+    extern float viewx, viewy, viewz;
+    extern float vk3, vk6, vk9;
+    int in_front = 0, beyond = 0;
+    float max_depth = 0.0f;
+    for (int c = 0; c < TRAK_LEN && c < MAX_TRACK_CHUNKS; c++) {
+        /* Same chunk-centre convention as CalcVisibleTrack() (drawtrk3.c):
+         * the world centre is -localdata[c].pointAy[3]. */
+        const tVec3 *p = &localdata[c].pointAy[3];
+        float depth = (-p->fX - viewx) * vk3 + (-p->fY - viewy) * vk6 + (-p->fZ - viewz) * vk9;
+        if (depth > 0.0f) in_front++;
+        if (depth > VR_EYE_FAR_PLANE_WU) beyond++;
+        if (depth > max_depth) max_depth = depth;
+    }
+    s_diag_chunks_in_front = in_front;
+    s_diag_chunks_beyond_far = beyond;
+    s_diag_max_chunk_depth = max_depth;
+}
+
 /* Builds the projection-only half of a VR eye's MVP: the asymmetric FOV
  * OpenXR reports for this eye, combined with the camera's already fully
  * composed rotation and world position -- no XrView/pose/
@@ -942,9 +975,7 @@ void build_mvp_vr_eye_projection(float mvp_out[16],
                                  stock car this is ~15.6 (the old 100-units/m placeholder gave
                                  5.0), looser than SCENE_GPU_NEAR's 10.0f non-VR default;
                                  may need tuning for comfort on a real headset */
-    float far_plane = 100000.0f;  /* already a world-unit quantity (not meters) -- same
-                                 order of magnitude as the game's own track-overview
-                                 camera distances, no conversion needed */
+    float far_plane = VR_EYE_FAR_PLANE_WU;
 
     /* mvp[11] = -1 below (w = -z_eye) assumes a -Z-forward eye space, which is exactly
      * what combined_rot produces (see its derivation above). */
@@ -1136,13 +1167,15 @@ bool vr_run_frame(void)
                               / (double)SDL_GetPerformanceFrequency();
             vr_log_line("INFO", "frame %d submitted (views=%u layerCount=1) "
                                 "view[0] pos=(%.3f,%.3f,%.3f) ori=(%.3f,%.3f,%.3f,%.3f) "
-                                "chunks=%d cars=%d buildings=%d drawCmds=%d vertices=%d cpuMs=%.2f",
+                                "chunks=%d cars=%d buildings=%d drawCmds=%d vertices=%d cpuMs=%.2f "
+                                "chunksBeyondFar=%d/%d maxChunkDepth=%.0f",
                         s_vr_frames_presented, (unsigned)s_frame_view_count_for_layer,
                         s_frame_views[0].pose.position.x, s_frame_views[0].pose.position.y,
                         s_frame_views[0].pose.position.z,
                         s_frame_views[0].pose.orientation.x, s_frame_views[0].pose.orientation.y,
                         s_frame_views[0].pose.orientation.z, s_frame_views[0].pose.orientation.w,
-                        TrackSize, numcars, NumVisibleBuildings, drawCmdCount, vertexCount, cpuFrameMs);
+                        TrackSize, numcars, NumVisibleBuildings, drawCmdCount, vertexCount, cpuFrameMs,
+                        s_diag_chunks_beyond_far, s_diag_chunks_in_front, (double)s_diag_max_chunk_depth);
         }
         /* --vr-frames N: after N frames actually reached the compositor, ask
          * the game to quit through its own shutdown path (same flags the
@@ -1311,6 +1344,8 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
          * renderer instances. The VR-eye override set above is now active
          * BEFORE any of this call's cars are queued. */
         draw_road(pMainScrPtr, uiViewType, iDriveView, -1, 0);
+        if (i == 0)
+            vr_diag_far_plane_chunks(); /* camera globals still hold eye 0's composed camera */
         vr_camera_compose_clear_active_eye();
 
         Uint32 image_index = 0;
@@ -1405,14 +1440,18 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
          * have finished producing `resolved`) and BEFORE the vkCmdCopyImage
          * below. The readback submits its own command buffer and never
          * touches the swapchain copy, so the image copied into OpenXR is
-         * unchanged. Every 90 presented frames: with --vr-fake-head that is
-         * yaw 0/90/180/270. */
-        if (g_szVREyeDumpDir[0] && (s_vr_frames_presented % 90) == 0) {
+         * unchanged. Every 90 presented frames by default (with --vr-fake-head that
+         * is yaw 0/90/180/270); --vr-eye-dump-every/--vr-eye-dump-from narrow it
+         * to a consecutive window for frame-to-frame pop-in comparisons. */
+        if (g_szVREyeDumpDir[0] && s_vr_frames_presented >= g_iVREyeDumpFrom
+            && ((s_vr_frames_presented - g_iVREyeDumpFrom) % g_iVREyeDumpEvery) == 0) {
             char dump_path[320];
             SDL_snprintf(dump_path, sizeof(dump_path), "%s/eye%u_frame%d.png",
                          g_szVREyeDumpDir, (unsigned)i, s_vr_frames_presented);
             if (game_render_dump_vr_eye_png(g_pGameRenderer, resolved, eye_w, eye_h, dump_path))
-                vr_log_line("INFO", "eye PNG dump: %s", dump_path);
+                vr_log_line("INFO", "eye PNG dump: %s (track chunks in front=%d beyond far plane %.0f=%d, max chunk depth %.0f)",
+                            dump_path, s_diag_chunks_in_front, (double)VR_EYE_FAR_PLANE_WU,
+                            s_diag_chunks_beyond_far, (double)s_diag_max_chunk_depth);
             else
                 vr_log_line("WARN", "eye PNG dump failed for %s", dump_path);
         }

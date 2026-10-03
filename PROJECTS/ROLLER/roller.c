@@ -126,6 +126,8 @@ char g_szVRTrackPath[260] = { 0 };
 float g_fVRMetersToWorldOverride = -1.0f; /* --vr-meters-to-world: <= 0 = derive from the car model */
 int g_bVRFakeHead = 0;
 char g_szVREyeDumpDir[260] = { 0 };
+int g_iVREyeDumpEvery = 90; /* --vr-eye-dump-every N */
+int g_iVREyeDumpFrom = 0;   /* --vr-eye-dump-from F */
 bool g_bPaletteSet = false;
 float g_fDrawDistanceFraction = 1.0f;
 bool g_bNoCollisionLimit = true;
