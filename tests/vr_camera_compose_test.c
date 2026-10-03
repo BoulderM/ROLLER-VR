@@ -38,11 +38,12 @@ static void mat3_rot_y(float theta, float m[3][3])
     m[2][0] = -s; m[2][1] = 0; m[2][2] = c;
 }
 
-/* Cross-check against vr_runtime.c's build_mvp_vr_eye() derivation:
- * S*out_rotᵗ must equal combined_rot = Hᵗ*S*Rᵗ (R = Vᵗ) -- see
- * vr_camera_compose.h's own derivation comment for the algebra. Reimplements
- * combined_rot independently (not calling vr_runtime.c) so this test has no
- * dependency on OpenXR headers. */
+/* Cross-check against the engine's now-retired build_mvp_vr_eye()'s own
+ * derivation (back when it composed the live head pose itself): S*out_rotᵗ
+ * must equal combined_rot = Hᵗ*S*Rᵗ (R = Vᵗ) -- see vr_camera_compose.h's
+ * own derivation comment for the algebra. Reimplements combined_rot
+ * independently (not calling vr_runtime.c) so this test has no dependency
+ * on OpenXR headers. */
 static void check_matches_old_combined_rot(const char *label, const float V[3][3],
                                             float qx, float qy, float qz, float qw)
 {
@@ -134,23 +135,52 @@ int main(void)
         check_close("(c) direction.z == cockpit right axis", d[2]/dist, V[2][0]);
     }
 
-    /* (c2) No-double-count check for vr_runtime.c's build_mvp_vr_eye_projection():
-     * that function takes an ALREADY fully eye-composed camera (base_cam/
-     * base_proj, post-Task-2) and builds a view matrix from it via
-     * combined_rot = vr_mat3_flip_row2(vr_mat3_transpose(base_proj->view))
-     * and a translation of -combined_rot * (viewX,viewY,viewZ) -- with NO
-     * further pose composition of its own (see that function's own
-     * comment). Reimplements exactly that view-matrix fragment here (same
-     * shared helpers, not a separate copy of the math) fed with case (c)'s
-     * own left/right composed cameras (identity head orientation, cockpit
-     * turned 90deg, eyes at +-0.0315m local X), then recovers each eye's
-     * world position back out of the resulting view matrix's rotation +
-     * translation (eye = -combined_rotᵗ * translation, valid since
-     * combined_rot is orthogonal). If build_mvp_vr_eye_projection() (or a
-     * future edit to it) ever re-composed the eye pose a second time on
-     * top of the already-composed camera -- the exact bug class this task
-     * exists to retire -- the recovered separation below would come out
-     * as 2x IPD instead of 1x. */
+    /* (c2) Genuine no-double-count check for the REAL shared
+     * vr_camera_view_basis() (vr_camera_compose.h/.c) -- the exact function
+     * vr_runtime.c's build_mvp_vr_eye_projection() calls to turn an ALREADY
+     * fully eye-composed camera into the rotation/position its projection
+     * needs. This calls that production function directly below, not a
+     * reimplementation of its math.
+     *
+     * Reuses case (c)'s left/right composed cameras (identity head
+     * orientation, cockpit turned 90deg, eyes at +-0.0315m local X,
+     * meters_to_world=100) -- exactly what Task 2's calculateview()
+     * post-step would write into vk1..vk9/viewx,y,z for each eye, which is
+     * what base_proj->view/base_cam->viewX,Y,Z snapshot in
+     * vr_present_stereo_frame().
+     *
+     * The two assertions below are each checked against a value computed
+     * INDEPENDENTLY of vr_camera_view_basis() itself -- neither is a
+     * round-trip identity that would hold regardless of correctness
+     * (contrast the old (c2), which recovered a position FROM the view
+     * matrix it had just built from that same position -- true for any
+     * orthogonal matrix, unconditionally, which is what code review
+     * flagged):
+     *
+     * 1. out_eye_pos must come back EXACTLY equal to the pos fed in
+     *    (left_pos/right_pos itself, not a value derived from it). A
+     *    reintroduced double-composition bug -- adding a head-pose
+     *    position delta back into vr_camera_view_basis() or around its
+     *    call in build_mvp_vr_eye_projection(), the exact bug class Phase
+     *    2 shipped for IPD -- would move out_eye_pos away from the input,
+     *    and this assertion would catch it directly.
+     *
+     * 2. out_combined_rot must equal a HAND-COMPUTED literal, not a value
+     *    obtained by calling vr_mat3_transpose()/vr_mat3_flip_row2() again
+     *    in this test (which would just compare the function to itself).
+     *    Identity head orientation makes left_rot == right_rot == V
+     *    exactly (H_game = I when q = identity -- see vr_camera_compose()'s
+     *    own derivation), and V = mat3_rot_y(90deg) = {{0,0,1},{0,1,0},
+     *    {-1,0,0}} (c=cos90=0, s=sin90=1), so the expected
+     *    combined_rot = S*transpose(V) can be derived by hand:
+     *      r_true = transpose(V) = {{0,0,-1},{0,1,0},{1,0,0}}
+     *        (r_true[0][2] = V[2][0] = -1; r_true[2][0] = V[0][2] = 1)
+     *      combined_rot = flip_row2(r_true) = {{0,0,-1},{0,1,0},{-1,0,0}}
+     *        (only row 2 negates: combined_rot[2][0] = -r_true[2][0] = -1)
+     *    If vr_camera_view_basis() (or build_mvp_vr_eye_projection() around
+     *    it) ever folded a live head rotation on top of r_true -- the
+     *    rotation half of the same double-composition bug class --
+     *    out_combined_rot would no longer match this literal. */
     {
         float V[3][3]; mat3_rot_y(90.0f * (float)M_PI / 180.0f, V);
         float zero_pos[3] = {0, 0, 0};
@@ -158,48 +188,44 @@ int main(void)
         vr_camera_compose(V, zero_pos, 0, 0, 0, 1, -0.0315f, 0, 0, 100.0f, left_rot, left_pos);
         vr_camera_compose(V, zero_pos, 0, 0, 0, 1,  0.0315f, 0, 0, 100.0f, right_rot, right_pos);
 
-        float recovered_left[3], recovered_right[3];
-        for (int eye = 0; eye < 2; eye++) {
-            const float (*rot)[3] = eye == 0 ? left_rot : right_rot;
-            const float *pos = eye == 0 ? left_pos : right_pos;
-            float *recovered = eye == 0 ? recovered_left : recovered_right;
-
-            /* Exactly build_mvp_vr_eye_projection()'s r_true/combined_rot/
-             * translation construction, given this eye's ALREADY composed
-             * rot/pos as base_proj->view/base_cam->viewX,Y,Z. */
-            float r_true[3][3];
-            vr_mat3_transpose(rot, r_true);
-            float combined_rot[3][3];
-            vr_mat3_flip_row2(r_true, combined_rot);
-            float translation[3];
-            for (int r = 0; r < 3; r++)
-                translation[r] = -(combined_rot[r][0] * pos[0]
-                                  + combined_rot[r][1] * pos[1]
-                                  + combined_rot[r][2] * pos[2]);
-
-            /* eye_world = -combined_rotᵗ * translation. */
-            for (int c = 0; c < 3; c++)
-                recovered[c] = -(combined_rot[0][c] * translation[0]
-                                + combined_rot[1][c] * translation[1]
-                                + combined_rot[2][c] * translation[2]);
+        /* Self-contained sanity check that this case's own setup still
+         * produces the 1x-IPD separation case (c) already proves in
+         * general. */
+        {
+            float d[3] = { right_pos[0]-left_pos[0], right_pos[1]-left_pos[1], right_pos[2]-left_pos[2] };
+            float dist = sqrtf(d[0]*d[0] + d[1]*d[1] + d[2]*d[2]);
+            check_close("(c2) fed-in eye separation == 1x IPD * meters_to_world", dist, 0.063f * 100.0f);
         }
 
-        check_close("(c2) recovered left_pos.x", recovered_left[0], left_pos[0]);
-        check_close("(c2) recovered left_pos.y", recovered_left[1], left_pos[1]);
-        check_close("(c2) recovered left_pos.z", recovered_left[2], left_pos[2]);
-        check_close("(c2) recovered right_pos.x", recovered_right[0], right_pos[0]);
-        check_close("(c2) recovered right_pos.y", recovered_right[1], right_pos[1]);
-        check_close("(c2) recovered right_pos.z", recovered_right[2], right_pos[2]);
-
-        float d[3] = {
-            recovered_right[0] - recovered_left[0],
-            recovered_right[1] - recovered_left[1],
-            recovered_right[2] - recovered_left[2],
+        const float expected_combined_rot[3][3] = {
+            {  0.0f, 0.0f, -1.0f },
+            {  0.0f, 1.0f,  0.0f },
+            { -1.0f, 0.0f,  0.0f },
         };
-        float dist = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-        check_close("(c2) view-matrix-recovered eye separation == 1x IPD * meters_to_world "
-                    "(not 2x -- would indicate double-counting)",
-                    dist, 0.063f * 100.0f);
+        const char *labels[2]        = { "left", "right" };
+        float (*eye_rots[2])[3]      = { left_rot, right_rot };
+        float *eye_poss[2]           = { left_pos, right_pos };
+
+        for (int eye = 0; eye < 2; eye++) {
+            float out_combined_rot[3][3], out_eye_pos[3];
+
+            /* Calls the REAL, shared production function. */
+            vr_camera_view_basis(eye_rots[eye], eye_poss[eye], out_combined_rot, out_eye_pos);
+
+            char buf[96];
+            for (int r = 0; r < 3; r++)
+                for (int c = 0; c < 3; c++) {
+                    snprintf(buf, sizeof(buf), "(c2) %s out_combined_rot[%d][%d]", labels[eye], r, c);
+                    check_close(buf, out_combined_rot[r][c], expected_combined_rot[r][c]);
+                }
+
+            snprintf(buf, sizeof(buf), "(c2) %s out_eye_pos.x == fed-in pos (unchanged, not recomposed)", labels[eye]);
+            check_close(buf, out_eye_pos[0], eye_poss[eye][0]);
+            snprintf(buf, sizeof(buf), "(c2) %s out_eye_pos.y == fed-in pos (unchanged, not recomposed)", labels[eye]);
+            check_close(buf, out_eye_pos[1], eye_poss[eye][1]);
+            snprintf(buf, sizeof(buf), "(c2) %s out_eye_pos.z == fed-in pos (unchanged, not recomposed)", labels[eye]);
+            check_close(buf, out_eye_pos[2], eye_poss[eye][2]);
+        }
     }
 
     /* (d) Angle round-trip: build a known rotation via the SAME formula

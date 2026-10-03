@@ -69,6 +69,18 @@ void vr_camera_compose(const float base_rot[3][3], const float base_pos[3],
                    + meters_to_world * (V[r][0] * s_p[0] + V[r][1] * s_p[1] + V[r][2] * s_p[2]);
 }
 
+void vr_camera_view_basis(const float base_rot[3][3], const float base_pos[3],
+                           float out_combined_rot[3][3], float out_eye_pos[3])
+{
+    float r_true[3][3];
+    vr_mat3_transpose(base_rot, r_true);
+    vr_mat3_flip_row2(r_true, out_combined_rot);
+
+    out_eye_pos[0] = base_pos[0];
+    out_eye_pos[1] = base_pos[1];
+    out_eye_pos[2] = base_pos[2];
+}
+
 /* Mirrors control.c's getangle() exactly (same formula, same literal) so
  * the 14-bit indices this module produces are consistent with every other
  * angle in the engine -- reimplemented here (not called directly) to keep
@@ -84,9 +96,12 @@ static int vr_angle14(float x, float y)
 void vr_camera_angles_from_rotation(const float rot[3][3],
                                      int *out_yaw, int *out_pitch, int *out_roll)
 {
-    /* Forward = column 2, up = column 1 (vr_runtime.c's build_mvp_vr_eye()
-     * derivation comment confirms col 2 is this engine's world-forward
-     * column for a local-to-world matrix in this [row][col] convention). */
+    /* Forward = column 2, up = column 1 -- this header's own
+     * vr_camera_compose() derivation comment above establishes col 2 as
+     * this engine's world-forward column for a local-to-world matrix in
+     * this [row][col] convention; vr_runtime.c's build_mvp_vr_eye_
+     * projection() (via vr_camera_view_basis() below) relies on the same
+     * convention. */
     float fx = rot[0][2], fy = rot[1][2], fz = rot[2][2];
     float ux = rot[0][1], uy = rot[1][1], uz = rot[2][1];
 

@@ -19,7 +19,7 @@ void vr_mat3_mul(const float a[3][3], const float b[3][3], float out[3][3]);
 /* S*src, S=diag(1,1,-1): negates row 2 only. Converts between OpenXR's
  * local/reference-space axis convention (+X right, +Y up, -Z forward) and
  * the game's own convention (+X right, +Y up, +Z forward) -- see
- * vr_runtime.c's build_mvp_vr_eye() derivation comment for the full
+ * vr_camera_view_basis()'s own derivation comment below for the full
  * justification; this is the exact same S. */
 void vr_mat3_flip_row2(const float src[3][3], float dst[3][3]);
 
@@ -43,9 +43,10 @@ void vr_mat3_flip_row2(const float src[3][3], float dst[3][3]);
  * +Z-forward convention is H_game = S*H*S (a similarity transform under the
  * axis flip -- S is its own inverse). The composed cockpit-plus-head
  * local-to-world rotation is out_rot = V * H_game = V*S*H*S. This is the
- * SAME relationship as vr_runtime.c's build_mvp_vr_eye() combined_rot (its
- * own derivation comment proves combined_rot = Hᵗ*S*Vᵗ = (V*S*H)ᵗ); the two
- * are related by out_rot = (combined_rot)ᵗ * S, confirmed algebraically by
+ * SAME relationship the engine's now-retired build_mvp_vr_eye() used for
+ * its own combined_rot, back when it composed the live head pose itself
+ * (its own derivation comment proved combined_rot = Hᵗ*S*Vᵗ = (V*S*H)ᵗ);
+ * the two are related by out_rot = (combined_rot)ᵗ * S, confirmed algebraically by
  * substitution (S*outᵗ = S*Sᵗ*Hᵗ*Vᵗ*Sᵗ = Hᵗ*S*Vᵗ = combined_rot, using
  * S=Sᵗ and S*S=I). This cross-check is exercised in
  * tests/vr_camera_compose_test.c. The world position offset follows the
@@ -75,6 +76,36 @@ void vr_camera_compose(const float base_rot[3][3], const float base_pos[3],
  * formula/literal). */
 void vr_camera_angles_from_rotation(const float rot[3][3],
                                      int *out_yaw, int *out_pitch, int *out_roll);
+
+/* --- VR eye projection view-basis extraction ----------------------------
+ * Used by vr_runtime.c's build_mvp_vr_eye_projection() to turn an ALREADY
+ * fully eye-composed camera into the rotation/position its asymmetric-FOV
+ * projection needs. base_rot/base_pos are in the SAME [row][col]/
+ * vk1..vk9+viewx,y,z convention as vr_camera_compose()'s base_rot/out_rot
+ * above -- by the time build_mvp_vr_eye_projection() runs, Task 2's
+ * vr_camera_compose_apply() has already composed this eye's live head pose
+ * into those globals, and base_rot/base_pos here are just that frame's
+ * snapshot of them (read from base_proj->view/base_cam->viewX,Y,Z).
+ *
+ * out_combined_rot = S * transpose(base_rot) (S = diag(1,1,-1)): first
+ * transpose to go from the game's local-to-world rotation to its
+ * world-to-camera rotation (R_true, the same "view[col][row]" relationship
+ * build_mvp() itself relies on, scene_render_gpu.c:831), then apply S to
+ * convert out of the game's own +Z-forward convention into OpenXR/GL's
+ * -Z-forward eye-space convention that the kept asymmetric projection
+ * expects. out_eye_pos is base_pos COPIED THROUGH UNCHANGED -- no offset
+ * of any kind is added.
+ *
+ * Deliberately takes NO pose/quaternion/XrView input of any kind: there is
+ * nothing here for a caller to feed a live eye pose into, so nothing
+ * calling this function can re-apply a head pose a second time. That is
+ * the whole point -- composing the live per-eye head pose is
+ * vr_camera_compose()'s job alone, done once, upstream of this function;
+ * see tests/vr_camera_compose_test.c's case (c2) for the regression check
+ * that calls this function directly against a known already-composed
+ * camera and confirms out_eye_pos comes back exactly unchanged. */
+void vr_camera_view_basis(const float base_rot[3][3], const float base_pos[3],
+                           float out_combined_rot[3][3], float out_eye_pos[3]);
 
 /* --- Active-eye-pose state, owned by this module ------------------------
  * Set by vr_present_stereo_frame() (vr_runtime.c) immediately before its own

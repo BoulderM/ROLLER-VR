@@ -16,7 +16,7 @@
  * identity orientation / zero position. The FOV is always the one the runtime
  * returned from the successful xrLocateViews call -- it is not pose-tracking
  * data, and an all-zero FOV would make tanf(0) divide by zero in
- * build_mvp_vr_eye(). */
+ * build_mvp_vr_eye_projection(). */
 static inline XrView vr_merge_view(const XrView *located, XrViewStateFlags flags,
                                    const XrView *last_good)
 {

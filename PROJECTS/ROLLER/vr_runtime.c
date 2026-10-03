@@ -850,36 +850,27 @@ void build_mvp_vr_eye_projection(float mvp_out[16],
                                   const SceneRenderProjection *base_proj,
                                   const XrFovf *fov)
 {
-    /* r_true = transpose(base_proj->view) -- the game's own +Z-forward
-     * world-to-camera rotation, exactly build_mvp()'s own "view[col][row]"
-     * relationship (scene_render_gpu.c:831, "const float (*R)[3] = proj->
-     * view"), just read out via the shared vr_mat3_transpose() instead of
-     * through that storage quirk directly. Per this function's own comment
-     * above, r_true is the FULL per-eye composed rotation already (Task 2),
-     * not the flat non-VR rotation the retired build_mvp_vr_eye() started
-     * from. */
-    float r_true[3][3];
-    vr_mat3_transpose(base_proj->view, r_true);
-
-    /* combined_rot = S * r_true converts r_true out of the game's own
-     * +Z-forward convention into OpenXR/GL's -Z-forward eye-space
-     * convention, which the kept asymmetric projection below (mvp[11] =
-     * -1, i.e. w = -z_eye) expects -- the same S flip the retired
-     * build_mvp_vr_eye() applied to its own R_true. That function then had
-     * to left-multiply by head_rot_T (H^T) to fold the eye's live pose in,
-     * because its r_true was still only the flat non-VR rotation. There is
-     * no such fold here: r_true is already fully eye-composed, so S *
-     * r_true alone is the complete world-to-eye rotation -- composing any
-     * head rotation again on top of it would double-count it. */
-    float combined_rot[3][3];
-    vr_mat3_flip_row2(r_true, combined_rot);
-
-    /* Likewise, base_cam->viewX/Y/Z is already this eye's fully composed
-     * world position (vr_camera_compose_apply() wrote it into
+    /* vr_camera_view_basis() (vr_camera_compose.h, Task 1's genuinely
+     * shared module -- this is the SAME function tests/vr_camera_compose_
+     * test.c's case (c2) calls directly) does the transpose + S-row-flip
+     * that turns base_proj->view (the FULL per-eye composed rotation
+     * already, per Task 2 -- not the flat non-VR rotation the retired
+     * build_mvp_vr_eye() started from) into combined_rot, the world-to-eye
+     * rotation the kept asymmetric projection below (mvp[11] = -1, i.e.
+     * w = -z_eye) expects, and passes base_cam->viewX/Y/Z through as
+     * eye_pos UNCHANGED (base_cam->viewX/Y/Z is already this eye's fully
+     * composed world position -- vr_camera_compose_apply() wrote it into
      * viewx/viewy/viewz, which this frame's base_cam snapshot was read
-     * from in vr_present_stereo_frame()) -- used directly below, with no
-     * further position offset added. */
-    float eye_x = base_cam->viewX, eye_y = base_cam->viewY, eye_z = base_cam->viewZ;
+     * from in vr_present_stereo_frame()). vr_camera_view_basis() takes no
+     * pose/quaternion input at all, so nothing here can double-count the
+     * eye's head pose the way the retired build_mvp_vr_eye() would have if
+     * adapted naively (it had to left-multiply by head_rot_T to fold the
+     * live pose into its own, still-flat, R_true). */
+    float combined_rot[3][3];
+    float eye_pos[3];
+    float base_pos[3] = { base_cam->viewX, base_cam->viewY, base_cam->viewZ };
+    vr_camera_view_basis(base_proj->view, base_pos, combined_rot, eye_pos);
+    float eye_x = eye_pos[0], eye_y = eye_pos[1], eye_z = eye_pos[2];
 
     /* Asymmetric perspective from the OpenXR-reported per-eye FOV -- the
      * one place VR genuinely needs a different projection construction
