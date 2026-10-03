@@ -781,6 +781,15 @@ bool vr_locate_views(XrTime predicted_display_time, XrView out_views[2])
          * OpenXR's axis convention (+X right, +Y up, -Z forward). */
         int frame = s_vr_frames_presented;
         float yawRad   = (float)(frame % 360) * (float)M_PI / 180.0f;
+        /* Test hook (ROLLER_VR_FAKE_HEAD_PITCH_SWEEP=1): hold yaw at 0 so
+         * only the pitch/roll sines and the small position offsets move the
+         * head -- a pitch sweep that keeps the same things in view, for
+         * frozen-world (--vr-freeze-from) drift checks. */
+        static int s_pitch_sweep_only = -1;
+        if (s_pitch_sweep_only < 0)
+            s_pitch_sweep_only = SDL_getenv("ROLLER_VR_FAKE_HEAD_PITCH_SWEEP") != NULL;
+        if (s_pitch_sweep_only)
+            yawRad = 0.0f;
         float pitchRad = sinf((float)frame * 0.02f) * 0.15f;  /* +-~8.6 deg */
         float rollRad  = sinf((float)frame * 0.013f) * 0.10f; /* +-~5.7 deg */
         float cy = cosf(yawRad * 0.5f),   sy = sinf(yawRad * 0.5f);
@@ -902,6 +911,14 @@ float vr_resolve_meters_to_world(void)
  * VR_EYE_FAR_PLANE_WU (so the eye's far plane clips them), and the deepest
  * chunk-centre depth. Filled after eye 0's draw_road(), logged with each
  * eye dump and in the periodic frame line. */
+/* Effect placement diag (headset-free pop-in check): eye 0's count of
+ * world-anchored screen-space effects (smoke, sparks) and how far they were
+ * placed from their world point's true eye projection, from
+ * game_render_vr_diag_effect_take() after eye 0's draw_road(). */
+static int   s_diag_effects = 0, s_diag_effects_in_view = 0;
+static float s_diag_effect_mean_err = 0.0f, s_diag_effect_max_err = 0.0f;
+static float s_diag_effect_first[4];
+static int   s_diag_effect_cut_in_view[2];
 static int   s_diag_chunks_in_front = 0;
 static int   s_diag_chunks_beyond_far = 0;
 static float s_diag_max_chunk_depth = 0.0f;
@@ -1116,8 +1133,21 @@ bool vr_run_frame(void)
      * same block SHIFT-freeze uses) so the world stands still and only the
      * head pose changes between frames -- adjacent eye dumps then differ
      * only by what the head motion reveals or hides. */
-    if (g_iVRFreezeFrom >= 0 && s_vr_frames_presented >= g_iVRFreezeFrom)
-        g_bVRTestFreeze = true;
+    if (g_iVRFreezeFrom >= 0 && s_vr_frames_presented >= g_iVRFreezeFrom && !g_bVRTestFreeze) {
+        /* ROLLER_VR_FREEZE_MIN_EFFECTS=K (with --vr-freeze-from): hold off the
+         * freeze until eye 0 drew at least K smoke/spark effects inside its
+         * view last frame, so a frozen run reliably has effects to measure. */
+        static int s_freeze_min_effects = -1;
+        if (s_freeze_min_effects < 0) {
+            const char *env = SDL_getenv("ROLLER_VR_FREEZE_MIN_EFFECTS");
+            s_freeze_min_effects = env ? SDL_atoi(env) : 0;
+        }
+        if (s_diag_effects_in_view >= s_freeze_min_effects) {
+            g_bVRTestFreeze = true;
+            vr_log_line("INFO", "test freeze engaged at presented frame %d (eye0 effects in view last frame=%d)",
+                        s_vr_frames_presented, s_diag_effects_in_view);
+        }
+    }
     bool keep_running = main_loop_iteration() != 0;
     /* End of the CPU-side frame window for the diag log's cpuMs= figure.
      * Taken here, before xrEndFrame(), so compositor wait time is excluded. */
@@ -1174,14 +1204,15 @@ bool vr_run_frame(void)
             vr_log_line("INFO", "frame %d submitted (views=%u layerCount=1) "
                                 "view[0] pos=(%.3f,%.3f,%.3f) ori=(%.3f,%.3f,%.3f,%.3f) "
                                 "chunks=%d cars=%d buildings=%d drawCmds=%d vertices=%d cpuMs=%.2f "
-                                "chunksBeyondFar=%d/%d maxChunkDepth=%.0f",
+                                "chunksBeyondFar=%d/%d maxChunkDepth=%.0f effects=%d",
                         s_vr_frames_presented, (unsigned)s_frame_view_count_for_layer,
                         s_frame_views[0].pose.position.x, s_frame_views[0].pose.position.y,
                         s_frame_views[0].pose.position.z,
                         s_frame_views[0].pose.orientation.x, s_frame_views[0].pose.orientation.y,
                         s_frame_views[0].pose.orientation.z, s_frame_views[0].pose.orientation.w,
                         TrackSize, numcars, NumVisibleBuildings, drawCmdCount, vertexCount, cpuFrameMs,
-                        s_diag_chunks_beyond_far, s_diag_chunks_in_front, (double)s_diag_max_chunk_depth);
+                        s_diag_chunks_beyond_far, s_diag_chunks_in_front, (double)s_diag_max_chunk_depth,
+                        s_diag_effects);
         }
         /* --vr-frames N: after N frames actually reached the compositor, ask
          * the game to quit through its own shutdown path (same flags the
@@ -1360,9 +1391,16 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
          * there are two draw_road() calls here (one per eye), not two
          * renderer instances. The VR-eye override set above is now active
          * BEFORE any of this call's cars are queued. */
+        game_render_vr_diag_effect_take(NULL, NULL, NULL, NULL, NULL); /* drop anything from outside this eye */
         draw_road(pMainScrPtr, uiViewType, iDriveView, -1, 0);
-        if (i == 0)
+        if (i == 0) {
             vr_diag_far_plane_chunks(); /* camera globals still hold eye 0's composed camera */
+            s_diag_effects = game_render_vr_diag_effect_take(&s_diag_effects_in_view,
+                                                             &s_diag_effect_mean_err,
+                                                             &s_diag_effect_max_err,
+                                                             s_diag_effect_first,
+                                                             s_diag_effect_cut_in_view);
+        }
         vr_camera_compose_clear_active_eye();
         game_render_clear_vr_sky_halfplane();
 
@@ -1466,11 +1504,21 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
             char dump_path[320];
             SDL_snprintf(dump_path, sizeof(dump_path), "%s/eye%u_frame%d.png",
                          g_szVREyeDumpDir, (unsigned)i, s_vr_frames_presented);
-            if (game_render_dump_vr_eye_png(g_pGameRenderer, resolved, eye_w, eye_h, dump_path))
+            if (game_render_dump_vr_eye_png(g_pGameRenderer, resolved, eye_w, eye_h, dump_path)) {
                 vr_log_line("INFO", "eye PNG dump: %s (track chunks in front=%d beyond far plane %.0f=%d, max chunk depth %.0f)",
                             dump_path, s_diag_chunks_in_front, (double)VR_EYE_FAR_PLANE_WU,
                             s_diag_chunks_beyond_far, (double)s_diag_max_chunk_depth);
-            else
+                if (i == 0)
+                    vr_log_line("INFO", "effect diag frame %d eye0: effects=%d inView=%d cutInView near=%d size=%d placementErrNdc mean=%.4f max=%.4f "
+                                        "first placed=(%.4f,%.4f) true=(%.4f,%.4f) "
+                                        "flat VIEWDIST=%d xbase=%d ybase=%d scr_size=%d win=%dx%d",
+                                s_vr_frames_presented, s_diag_effects, s_diag_effects_in_view,
+                                s_diag_effect_cut_in_view[0], s_diag_effect_cut_in_view[1],
+                                (double)s_diag_effect_mean_err, (double)s_diag_effect_max_err,
+                                (double)s_diag_effect_first[0], (double)s_diag_effect_first[1],
+                                (double)s_diag_effect_first[2], (double)s_diag_effect_first[3],
+                                VIEWDIST, xbase, ybase, scr_size, winw, winh);
+            } else
                 vr_log_line("WARN", "eye PNG dump failed for %s", dump_path);
         }
 

@@ -2210,7 +2210,7 @@ void DisplayCarSmoke(int carIdx, const CarRenderPose *pose)
         float vx = (float)(dx * vk1 + dy * vk4 + dz * vk7);
         float vy = (float)(dx * vk2 + dy * vk5 + dz * vk8);
         float camZ = (float)(dx * vk3 + dy * vk6 + dz * vk9);
-        if (camZ <= SCENE_GPU_NEAR) continue;
+        if (camZ <= SCENE_GPU_NEAR) { game_render_vr_diag_effect_cut(wx, wy, wz, 0); continue; }
 
         float invZ = 1.0f / camZ;
         int sx = d2i((double)VIEWDIST * vx * invZ + xbase) * scr_size >> 6;
@@ -2275,6 +2275,8 @@ void DisplayCarSmoke(int carIdx, const CarRenderPose *pose)
                 const float ndcZv[4] = {tailNdcZ, tailNdcZ, gndcZ, gndcZ};
                 game_render_set_particle_depth_pervertex(g_pGameRenderer, ndcZv);
             }
+            game_render_vr_diag_effect(wx, wy, wz, (float)sx / (float)winw * 2.0f - 1.0f,
+                                       1.0f - (float)sy / (float)winh * 2.0f);
             if ((surf & SURFACE_FLAG_APPLY_TEXTURE) == 0)
                 game_render_quad_screen(g_pGameRenderer, &CarPol, TEXTURE_HANDLE_INVALID, NULL);
             else
@@ -2282,7 +2284,10 @@ void DisplayCarSmoke(int carIdx, const CarRenderPose *pose)
         } else {
             float proj = (double)VIEWDIST * p->fSize * invZ;
             int iSize = d2i(proj);
-            if (iSize <= 0 || iSize >= 100) continue;
+            if (iSize <= 0 || iSize >= 100) {
+                if (iSize >= 100) game_render_vr_diag_effect_cut(wx, wy, wz, 1);
+                continue;
+            }
             int scSize = (scr_size * iSize) >> 6;
             CarPol.iSurfaceType  = p->iColor;
             CarPol.uiNumVerts    = 4;
@@ -2290,6 +2295,8 @@ void DisplayCarSmoke(int carIdx, const CarRenderPose *pose)
             CarPol.vertices[1].x = sx - scSize; CarPol.vertices[1].y = sy - scSize;
             CarPol.vertices[2].x = sx - scSize; CarPol.vertices[2].y = sy + scSize;
             CarPol.vertices[3].x = sx + scSize; CarPol.vertices[3].y = sy + scSize;
+            game_render_vr_diag_effect(wx, wy, wz, (float)sx / (float)winw * 2.0f - 1.0f,
+                                       1.0f - (float)sy / (float)winh * 2.0f);
             if ((CarPol.iSurfaceType & SURFACE_FLAG_APPLY_TEXTURE) == 0)
                 game_render_quad_screen(g_pGameRenderer, &CarPol, TEXTURE_HANDLE_INVALID, NULL);
             else

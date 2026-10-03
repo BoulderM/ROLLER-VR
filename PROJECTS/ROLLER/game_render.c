@@ -270,7 +270,11 @@ void game_render_end_frame(GameRenderer *renderer) {
 #endif
 }
 
+/* Copy of the current VR eye's MVP for game_render_vr_diag_effect(). */
+static float s_vrDiagMvp[16];
+
 void game_render_set_vr_eye_mvp(GameRenderer *renderer, const float mvp[16]) {
+    if (mvp) memcpy(s_vrDiagMvp, mvp, sizeof(s_vrDiagMvp));
     if (!renderer || !renderer->gpu) return;
     scene_render_gpu_set_vr_eye_mvp(renderer->gpu, mvp);
 }
@@ -1076,6 +1080,67 @@ void game_render_set_vr_sky_halfplane(float a, float b, float c) {
 
 void game_render_clear_vr_sky_halfplane(void) {
     s_vrSkyActive = false;
+}
+
+/* VR headset-free test hook: per-eye placement error of world-anchored
+ * screen-space effects (see game_render.h). */
+static int   s_vrDiagN = 0, s_vrDiagNInView = 0;
+static float s_vrDiagSumErr = 0.0f, s_vrDiagMaxErr = 0.0f;
+static float s_vrDiagFirst[4];
+
+static int   s_vrDiagCutInView[2];
+
+/* World point through the current eye's MVP (column-major, as
+ * build_mvp_vr_eye_projection() writes it). False if behind the eye. */
+static bool vr_diag_true_ndc(float wx, float wy, float wz, float *tx, float *ty) {
+    const float *m = s_vrDiagMvp;
+    float cx = m[0] * wx + m[4] * wy + m[8]  * wz + m[12];
+    float cy = m[1] * wx + m[5] * wy + m[9]  * wz + m[13];
+    float cw = m[3] * wx + m[7] * wy + m[11] * wz + m[15];
+    if (cw <= 0.0f) return false;
+    *tx = cx / cw; *ty = cy / cw;
+    return true;
+}
+
+void game_render_vr_diag_effect_cut(float wx, float wy, float wz, int reason) {
+    float tx, ty;
+    if (!s_vrSkyActive || reason < 0 || reason > 1) return;
+    if (vr_diag_true_ndc(wx, wy, wz, &tx, &ty) && fabsf(tx) <= 1.0f && fabsf(ty) <= 1.0f)
+        s_vrDiagCutInView[reason]++;
+}
+
+void game_render_vr_diag_effect(float wx, float wy, float wz, float placedNdcX, float placedNdcY) {
+    float tx, ty;
+    if (!s_vrSkyActive) return;  /* only inside a VR eye's draw_road() */
+    if (!vr_diag_true_ndc(wx, wy, wz, &tx, &ty)) return;
+    s_vrDiagN++;
+    if (fabsf(tx) > 1.0f || fabsf(ty) > 1.0f) return;  /* error stats: in-view effects only */
+    float ex = placedNdcX - tx, ey = placedNdcY - ty;
+    float err = sqrtf(ex * ex + ey * ey);
+    if (s_vrDiagNInView == 0) {
+        s_vrDiagFirst[0] = placedNdcX; s_vrDiagFirst[1] = placedNdcY;
+        s_vrDiagFirst[2] = tx;         s_vrDiagFirst[3] = ty;
+    }
+    s_vrDiagNInView++;
+    s_vrDiagSumErr += err;
+    if (err > s_vrDiagMaxErr) s_vrDiagMaxErr = err;
+}
+
+int game_render_vr_diag_effect_take(int *outInView, float *outMeanErr, float *outMaxErr,
+                                    float outFirst[4], int outCutInView[2]) {
+    int n = s_vrDiagN, nv = s_vrDiagNInView;
+    if (outInView) *outInView = nv;
+    if (outCutInView) { outCutInView[0] = s_vrDiagCutInView[0]; outCutInView[1] = s_vrDiagCutInView[1]; }
+    s_vrDiagCutInView[0] = s_vrDiagCutInView[1] = 0;
+    if (outMeanErr) *outMeanErr = nv ? s_vrDiagSumErr / (float)nv : 0.0f;
+    if (outMaxErr)  *outMaxErr = s_vrDiagMaxErr;
+    if (outFirst)
+        for (int k = 0; k < 4; k++) outFirst[k] = nv ? s_vrDiagFirst[k] : 0.0f;
+    s_vrDiagN = 0;
+    s_vrDiagNInView = 0;
+    s_vrDiagSumErr = 0.0f;
+    s_vrDiagMaxErr = 0.0f;
+    return n;
 }
 
 void game_render_draw_sky(GameRenderer *renderer,

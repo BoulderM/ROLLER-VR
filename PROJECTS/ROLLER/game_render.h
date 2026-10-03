@@ -353,6 +353,20 @@ void game_render_draw_sky(GameRenderer *renderer,
 void game_render_set_vr_sky_halfplane(float a, float b, float c);
 void game_render_clear_vr_sky_halfplane(void);
 
+/* VR headset-free test hook. Inside a VR eye's draw_road(), records how far a
+ * world-anchored screen-space effect (smoke, sparks) was placed, in eye NDC,
+ * from where the eye's own MVP puts its world point (wx, wy, wz). _take()
+ * returns the count since the last take and, for the effects whose world
+ * point is inside the eye's view, their count, mean and max placement error
+ * and the first one's placed and true NDC (x, y, x, y); plus the in-view cut
+ * counts below. Then it resets. */
+void game_render_vr_diag_effect(float wx, float wy, float wz, float placedNdcX, float placedNdcY);
+/* Same hook for an effect dropped by a cut-off (reason 0: near cut, 1: size
+ * cut); counted only when its world point is inside the eye's view. */
+void game_render_vr_diag_effect_cut(float wx, float wy, float wz, int reason);
+int  game_render_vr_diag_effect_take(int *outInView, float *outMeanErr, float *outMaxErr,
+                                     float outFirst[4], int outCutInView[2]);
+
 // Draw — HUD sprites
 void game_render_sprite(GameRenderer *renderer, int slot, int blockIdx,
                         int x, int y, int transparentColorIndex,
