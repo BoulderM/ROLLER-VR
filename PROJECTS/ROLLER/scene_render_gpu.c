@@ -3819,6 +3819,88 @@ void scene_render_gpu_discard_queued(SceneRendererGPU *r)
     r->carShadowDrawCount = 0;
 }
 
+void scene_render_gpu_get_draw_stats(const SceneRendererGPU *r, int *outDrawCmdCount, int *outVertexCount)
+{
+    if (outDrawCmdCount) *outDrawCmdCount = r ? r->drawCmdCount : 0;
+    if (outVertexCount)  *outVertexCount  = r ? r->vertexCount  : 0;
+}
+
+/* Test-only readback of an already-rendered windowless eye texture. Mirrors
+ * the bReadback download sequence in scene_render_gpu_end_frame_internal()
+ * (BeginGPUCopyPass -> DownloadFromGPUTexture -> EndGPUCopyPass -> submit
+ * with fence -> WaitForGPUFences -> MapGPUTransferBuffer -> copy_readback_
+ * to_rgba -> Unmap -> ReleaseGPUFence), but on its own command buffer so it
+ * never touches r->cmdBuf or the swapchain path. */
+bool scene_render_gpu_dump_vr_eye_png(SceneRendererGPU *r, SDL_GPUTexture *tex,
+                                      Uint32 uiWidth, Uint32 uiHeight,
+                                      const char *szPath)
+{
+    if (!r || !r->device || !tex || !szPath || uiWidth == 0 || uiHeight == 0
+            || uiWidth > INT_MAX || uiHeight > INT_MAX)
+        return false;
+    if (!readback_format_supported(r->colorTargetFormat))
+        return false;
+    Uint64 ullPackedSize = (Uint64)uiWidth * (Uint64)uiHeight * 4u;
+    if (ullPackedSize > UINT32_MAX)
+        return false;
+
+    if (!r->readbackXfer || r->readbackCapacity < (Uint32)ullPackedSize) {
+        if (r->readbackXfer)
+            SDL_ReleaseGPUTransferBuffer(r->device, r->readbackXfer);
+        SDL_GPUTransferBufferCreateInfo tbi = {
+            .usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
+            .size  = (Uint32)ullPackedSize
+        };
+        r->readbackXfer = SDL_CreateGPUTransferBuffer(r->device, &tbi);
+        r->readbackCapacity = r->readbackXfer ? (Uint32)ullPackedSize : 0;
+        if (!r->readbackXfer)
+            return false;
+    }
+
+    SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(r->device);
+    if (!cmd) return false;
+    SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cmd);
+    if (!cp) {
+        SDL_CancelGPUCommandBuffer(cmd);
+        return false;
+    }
+    SDL_GPUTextureRegion src = {
+        .texture = tex,
+        .w = uiWidth,
+        .h = uiHeight,
+        .d = 1
+    };
+    SDL_GPUTextureTransferInfo dst = {
+        .transfer_buffer = r->readbackXfer,
+        .pixels_per_row = uiWidth,
+        .rows_per_layer = uiHeight
+    };
+    SDL_DownloadFromGPUTexture(cp, &src, &dst);
+    SDL_EndGPUCopyPass(cp);
+    SDL_GPUFence *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+    if (!fence) return false;
+
+    bool ok = false;
+    SDL_GPUFence *apFences[1] = { fence };
+    if (SDL_WaitForGPUFences(r->device, true, apFences, 1)) {
+        const uint8 *pbyMapped = SDL_MapGPUTransferBuffer(r->device, r->readbackXfer, false);
+        if (pbyMapped) {
+            uint8 *pbyRgba = (uint8 *)malloc((size_t)ullPackedSize);
+            if (pbyRgba) {
+                copy_readback_to_rgba(pbyRgba, uiWidth * 4u, pbyMapped,
+                                      (int)uiWidth, (int)uiHeight, r->colorTargetFormat);
+                ok = RollerWriteRgbaPng(szPath, pbyRgba, (int)uiWidth, (int)uiHeight) == 0;
+                free(pbyRgba);
+            }
+            SDL_UnmapGPUTransferBuffer(r->device, r->readbackXfer);
+        }
+    } else {
+        SDL_Log("scene_render_gpu: eye dump fence wait failed: %s", SDL_GetError());
+    }
+    SDL_ReleaseGPUFence(r->device, fence);
+    return ok;
+}
+
 /* --------------------------------------------------------------------------
  * State setters
  * -------------------------------------------------------------------------- */

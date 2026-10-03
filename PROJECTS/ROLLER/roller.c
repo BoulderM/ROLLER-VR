@@ -124,6 +124,8 @@ int g_bVRMode = 0;
 int g_iVRMaxFrames = 0;   /* --vr-frames N: stop after N stereo frames are presented (0 = unlimited) */
 char g_szVRTrackPath[260] = { 0 };
 float g_fVRMetersToWorldOverride = -1.0f; /* --vr-meters-to-world: <= 0 = derive from the car model */
+int g_bVRFakeHead = 0;
+char g_szVREyeDumpDir[260] = { 0 };
 bool g_bPaletteSet = false;
 float g_fDrawDistanceFraction = 1.0f;
 bool g_bNoCollisionLimit = true;

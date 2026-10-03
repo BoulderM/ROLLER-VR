@@ -285,6 +285,21 @@ SDL_GPUFence *game_render_get_last_vr_fence(GameRenderer *renderer) {
     return scene_render_gpu_get_last_fence(renderer->gpu);
 }
 
+void game_render_get_draw_stats(GameRenderer *renderer, int *outDrawCmdCount, int *outVertexCount) {
+    if (!renderer || !renderer->gpu) {
+        if (outDrawCmdCount) *outDrawCmdCount = 0;
+        if (outVertexCount) *outVertexCount = 0;
+        return;
+    }
+    scene_render_gpu_get_draw_stats(renderer->gpu, outDrawCmdCount, outVertexCount);
+}
+
+bool game_render_dump_vr_eye_png(GameRenderer *renderer, SDL_GPUTexture *tex,
+                                 Uint32 uiWidth, Uint32 uiHeight, const char *szPath) {
+    if (!renderer || !renderer->gpu) return false;
+    return scene_render_gpu_dump_vr_eye_png(renderer->gpu, tex, uiWidth, uiHeight, szPath);
+}
+
 void game_render_cancel_frame(GameRenderer *renderer) {
     if (!renderer || !renderer->gpu) return;
     scene_render_gpu_cancel_frame(renderer->gpu);

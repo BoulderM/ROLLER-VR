@@ -79,6 +79,8 @@ extern char g_szVRTrackPath[260];
 extern float g_fVRMetersToWorldOverride; /* --vr-meters-to-world: overrides the car-model-derived
                                              default entirely when > 0; <= 0 (default -1) means
                                              "compute from CarBox" */
+extern int g_bVRFakeHead;              /* --vr-fake-head: scripted head-pose sweep instead of xrLocateViews() */
+extern char g_szVREyeDumpDir[260];     /* --vr-eye-dump-dir DIR: in-process PNG dump of each eye, every 90 presented frames */
 
 // Debug overlay accessor
 struct DebugOverlay;

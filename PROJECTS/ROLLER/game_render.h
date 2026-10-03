@@ -70,6 +70,13 @@ void game_render_end_frame(GameRenderer *renderer);
 void game_render_set_vr_eye_mvp(GameRenderer *renderer, const float mvp[16]);
 SDL_GPUTexture *game_render_end_frame_to_vr_eye(GameRenderer *renderer, Uint32 uiWidth, Uint32 uiHeight);
 SDL_GPUFence *game_render_get_last_vr_fence(GameRenderer *renderer);
+/* Queued draw-command/vertex counts for the most recent render cycle (see
+ * scene_render_gpu_get_draw_stats). Zeroes if the renderer has no GPU. */
+void game_render_get_draw_stats(GameRenderer *renderer, int *outDrawCmdCount, int *outVertexCount);
+/* Test-only: PNG dump of an already-rendered eye texture (see
+ * scene_render_gpu_dump_vr_eye_png). Returns false on any failure. */
+bool game_render_dump_vr_eye_png(GameRenderer *renderer, SDL_GPUTexture *tex,
+                                 Uint32 uiWidth, Uint32 uiHeight, const char *szPath);
 /* Discards a pending, not-yet-submitted command buffer acquired by
  * game_render_begin_frame() (e.g. a VR tick that ends up not rendering
  * anything, or an early-out on an error path partway through a frame),

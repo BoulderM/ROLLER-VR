@@ -638,6 +638,8 @@ static void print_usage(FILE *f, const char *argv0)
   cli_fprintf(f, " --vr                    boot headless into VR mode (windowless GPU device, direct race start)\n");
   cli_fprintf(f, " --vr-frames N           with --vr: quit cleanly after N stereo frames (default: run until closed)\n");
   cli_fprintf(f, " --vr-meters-to-world V  with --vr: world units per meter (default: derived from the car model)\n");
+  cli_fprintf(f, " --vr-fake-head          with --vr: scripted head-pose sweep instead of the headset pose (testing)\n");
+  cli_fprintf(f, " --vr-eye-dump-dir DIR   with --vr: write each eye's rendered frame to DIR as PNG every 90 frames\n");
 #endif
   cli_fprintf(f, " --track-path PATH       load a track directly from an absolute path\n");
   cli_fprintf(f, " --track-asset-root DIR  resolve direct-track assets from this document root first\n");
@@ -3074,6 +3076,20 @@ int main(int argc, const char **argv, const char **envp)
         consumed = 2;
       } else {
         cli_fprintf(stderr, "ERROR: '--vr-meters-to-world' needs an argument\n");
+        return 1;
+      }
+    } else if (strcmp(argv[i], "--vr-fake-head") == 0) {
+      g_bVRFakeHead = 1;
+      consumed = 1;
+    } else if (strcmp(argv[i], "--vr-eye-dump-dir") == 0) {
+      if (i + 1 < argc) {
+        if (SDL_snprintf(g_szVREyeDumpDir, sizeof(g_szVREyeDumpDir), "%s", argv[i + 1]) >= (int)sizeof(g_szVREyeDumpDir)) {
+          cli_fprintf(stderr, "ERROR: '--vr-eye-dump-dir' path is too long\n");
+          return 1;
+        }
+        consumed = 2;
+      } else {
+        cli_fprintf(stderr, "ERROR: '--vr-eye-dump-dir' needs an argument\n");
         return 1;
       }
 #endif

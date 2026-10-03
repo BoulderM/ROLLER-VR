@@ -33,7 +33,9 @@
 #include "roller.h"  /* ROLLERGetGPUDevice() -- see vr_init() below */
 #include "view.h"    /* calculateview() -- see vr_present_stereo_frame() below */
 #include "frontend.h"  /* quit_game, racing -- --vr-frames bounded-run exit */
-#include "car.h"       /* Car[], CarBox -- vr_resolve_meters_to_world() */
+#include "car.h"       /* Car[], CarBox, numcars -- vr_resolve_meters_to_world(), periodic diag log */
+#include "drawtrk3.h"  /* TrackSize -- periodic diag log (chunk count) */
+#include "building.h"  /* NumVisibleBuildings -- periodic diag log (building count) */
 
 static SDL_GPUDevice *s_gpu;
 static VkInstance s_vk_instance;
@@ -776,6 +778,42 @@ static bool   s_have_last_good_views = false;
 
 bool vr_locate_views(XrTime predicted_display_time, XrView out_views[2])
 {
+    if (g_bVRFakeHead) {
+        /* --vr-fake-head: deterministic scripted pose, driven by the presented-
+         * frame counter (not wall-clock) so runs are reproducible. A full 360-
+         * degree yaw sweep over 360 frames (1 degree per frame), with small
+         * sine-wave pitch/roll and position offsets layered on top so the sweep
+         * exercises more than pure yaw. Yaw is 0/90/180/270 at presented frames
+         * 0/90/180/270 exactly. Quaternion is yaw(Y) * pitch(X) * roll(Z) in
+         * OpenXR's axis convention (+X right, +Y up, -Z forward). */
+        int frame = s_vr_frames_presented;
+        float yawRad   = (float)(frame % 360) * (float)M_PI / 180.0f;
+        float pitchRad = sinf((float)frame * 0.02f) * 0.15f;  /* +-~8.6 deg */
+        float rollRad  = sinf((float)frame * 0.013f) * 0.10f; /* +-~5.7 deg */
+        float cy = cosf(yawRad * 0.5f),   sy = sinf(yawRad * 0.5f);
+        float cp = cosf(pitchRad * 0.5f), sp = sinf(pitchRad * 0.5f);
+        float cr = cosf(rollRad * 0.5f),  sr = sinf(rollRad * 0.5f);
+        XrQuaternionf q = {
+            .x = sp*cy*cr + cp*sy*sr,
+            .y = cp*sy*cr - sp*cy*sr,
+            .z = cp*cy*sr - sp*sy*cr,
+            .w = cp*cy*cr + sp*sy*sr,
+        };
+        XrVector3f pos = {
+            .x = sinf((float)frame * 0.05f) * 0.05f,
+            .y = 0.0f,
+            .z = cosf((float)frame * 0.05f) * 0.02f,
+        };
+        /* ~42-degree half-angles, a plausible stand-in HMD FOV. */
+        XrFovf fov = { -0.733f, 0.733f, 0.733f, -0.733f };
+        for (int i = 0; i < 2; i++) {
+            out_views[i] = (XrView){ .type = XR_TYPE_VIEW,
+                                     .pose = { .orientation = q, .position = pos },
+                                     .fov = fov };
+        }
+        return true;
+    }
+
     XrViewLocateInfo locate_info = {
         .type = XR_TYPE_VIEW_LOCATE_INFO,
         .viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
@@ -977,6 +1015,13 @@ void build_mvp_vr_eye_projection(float mvp_out[16],
 static XrView       s_frame_views[2];
 static bool         s_should_render_this_tick = false;
 
+/* CPU-side frame timing for the periodic diag log (cpuMs=). Set right after
+ * xrBeginFrame() succeeds in vr_run_frame(). This is a CPU wall-clock proxy
+ * for the game tick plus both eyes' queueing/submission, NOT a GPU timestamp:
+ * a real GPU-side measurement would need Vulkan timestamp queries, which are
+ * out of scope for this test-infrastructure task. */
+static Uint64       s_cpuFrameStartTicks = 0;
+
 /* Filled in by vr_present_stereo_frame() (one entry per eye actually
  * rendered this tick) and consumed by vr_run_frame() when it builds this
  * tick's xrEndFrame composition layer. s_frame_view_count_for_layer is
@@ -1038,6 +1083,7 @@ bool vr_run_frame(void)
      * by vr_shutdown() itself, if main_loop_iteration() below reaches it
      * first). */
     s_frame_open = true;
+    s_cpuFrameStartTicks = SDL_GetPerformanceCounter();
 
     s_should_render_this_tick = s_frame_state.shouldRender;
     if (s_should_render_this_tick) {
@@ -1060,6 +1106,9 @@ bool vr_run_frame(void)
      * are what it reads, and it fills s_projection_views/
      * s_frame_view_count_for_layer for the xrEndFrame call below. */
     bool keep_running = main_loop_iteration() != 0;
+    /* End of the CPU-side frame window for the diag log's cpuMs= figure.
+     * Taken here, before xrEndFrame(), so compositor wait time is excluded. */
+    Uint64 cpu_end_ticks = SDL_GetPerformanceCounter();
 
     /* task-7-round2 New Important 1: main_loop_iteration() above can reach
      * frontend_shutdown_finish() -> vr_shutdown() on this exact tick (the
@@ -1100,14 +1149,25 @@ bool vr_run_frame(void)
 
     if (s_frame_view_count_for_layer > 0) {
         s_vr_frames_presented++;
-        if (s_vr_frames_presented == 1 || s_vr_frames_presented % 60 == 0)
+        if (s_vr_frames_presented == 1 || s_vr_frames_presented % 60 == 0) {
+            /* Draw counts are the last eye's queued/merged totals for this
+             * tick (scene_render_gpu's repack leaves them valid until the next
+             * begin_frame). cpuMs covers the game tick and both eyes' CPU work,
+             * not GPU execution time. */
+            int drawCmdCount = 0, vertexCount = 0;
+            game_render_get_draw_stats(g_pGameRenderer, &drawCmdCount, &vertexCount);
+            double cpuFrameMs = (double)(cpu_end_ticks - s_cpuFrameStartTicks) * 1000.0
+                              / (double)SDL_GetPerformanceFrequency();
             vr_log_line("INFO", "frame %d submitted (views=%u layerCount=1) "
-                                "view[0] pos=(%.3f,%.3f,%.3f) ori=(%.3f,%.3f,%.3f,%.3f)",
+                                "view[0] pos=(%.3f,%.3f,%.3f) ori=(%.3f,%.3f,%.3f,%.3f) "
+                                "chunks=%d cars=%d buildings=%d drawCmds=%d vertices=%d cpuMs=%.2f",
                         s_vr_frames_presented, (unsigned)s_frame_view_count_for_layer,
                         s_frame_views[0].pose.position.x, s_frame_views[0].pose.position.y,
                         s_frame_views[0].pose.position.z,
                         s_frame_views[0].pose.orientation.x, s_frame_views[0].pose.orientation.y,
-                        s_frame_views[0].pose.orientation.z, s_frame_views[0].pose.orientation.w);
+                        s_frame_views[0].pose.orientation.z, s_frame_views[0].pose.orientation.w,
+                        TrackSize, numcars, NumVisibleBuildings, drawCmdCount, vertexCount, cpuFrameMs);
+        }
         /* --vr-frames N: after N frames actually reached the compositor, ask
          * the game to quit through its own shutdown path (same flags the
          * headless snapshot mode uses), so frontend_shutdown_finish() ->
@@ -1373,6 +1433,23 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
             XrSwapchainImageReleaseInfo release_info = { .type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
             xrReleaseSwapchainImage(s_swapchains[i], &release_info);
             return;
+        }
+
+        /* --vr-eye-dump-dir test hook: in-process readback of this eye's
+         * resolved texture. Placed AFTER the fence wait above (the GPU must
+         * have finished producing `resolved`) and BEFORE the vkCmdCopyImage
+         * below. The readback submits its own command buffer and never
+         * touches the swapchain copy, so the image copied into OpenXR is
+         * unchanged. Every 90 presented frames: with --vr-fake-head that is
+         * yaw 0/90/180/270. */
+        if (g_szVREyeDumpDir[0] && (s_vr_frames_presented % 90) == 0) {
+            char dump_path[320];
+            SDL_snprintf(dump_path, sizeof(dump_path), "%s/eye%u_frame%d.png",
+                         g_szVREyeDumpDir, (unsigned)i, s_vr_frames_presented);
+            if (game_render_dump_vr_eye_png(g_pGameRenderer, resolved, eye_w, eye_h, dump_path))
+                vr_log_line("INFO", "eye PNG dump: %s", dump_path);
+            else
+                vr_log_line("WARN", "eye PNG dump failed for %s", dump_path);
         }
 
         vkResetCommandBuffer(s_command_buffer, 0);

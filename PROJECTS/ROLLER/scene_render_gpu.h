@@ -50,6 +50,11 @@ bool scene_render_gpu_end_frame_readback(SceneRendererGPU *r,
                                          Uint32 uiHeight);
 void scene_render_gpu_cancel_frame(SceneRendererGPU *r);
 void scene_render_gpu_discard_queued(SceneRendererGPU *r);
+/* Draw-command and vertex counts currently queued on the renderer (after the
+ * last end_frame's repack, so these are merged counts, not raw queue counts).
+ * They reflect the most recent begin_frame..end_frame cycle; reset by the
+ * next begin_frame. Either out-pointer may be NULL. */
+void scene_render_gpu_get_draw_stats(const SceneRendererGPU *r, int *outDrawCmdCount, int *outVertexCount);
 
 void scene_render_gpu_set_viewport(SceneRendererGPU *r,
                                    int x, int y, int w, int h);
@@ -105,6 +110,16 @@ SDL_GPUFence *scene_render_gpu_get_last_fence(SceneRendererGPU *r);
 SDL_GPUTexture *scene_render_gpu_end_frame_to_vr_eye(SceneRendererGPU *r,
                                                       Uint32 uiWidth,
                                                       Uint32 uiHeight);
+
+/* Test-only: downloads a texture the renderer already produced (e.g. the
+ * pointer returned by scene_render_gpu_end_frame_to_vr_eye()) into a fresh
+ * CPU buffer and writes it as an RGBA PNG at szPath. Does not touch
+ * r->cmdBuf or the swapchain, and does not consume lastVrFence. The caller
+ * must ensure the GPU work that produced tex has already completed (the VR
+ * present path waits on its fence first). Returns false on any failure. */
+bool scene_render_gpu_dump_vr_eye_png(SceneRendererGPU *r, SDL_GPUTexture *tex,
+                                      Uint32 uiWidth, Uint32 uiHeight,
+                                      const char *szPath);
 
 void scene_render_gpu_set_camera(SceneRendererGPU *r,
                                  const SceneRenderCamera *cam);
