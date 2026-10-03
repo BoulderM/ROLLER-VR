@@ -163,3 +163,22 @@ bool vr_camera_compose_apply(float rot[3][3], float pos[3],
     vr_camera_angles_from_rotation(rot, out_yaw, out_pitch, out_roll);
     return true;
 }
+
+void vr_eye_sky_halfplane(const float base_rot[3][3],
+                          float tan_left, float tan_right,
+                          float tan_up, float tan_down,
+                          float *out_a, float *out_b, float *out_c)
+{
+    /* World up (+Z) in OpenXR eye space: column 2 of the world-to-eye
+     * rotation vr_camera_view_basis() builds (the projection path's own
+     * view matrix, so the sky split and the geometry agree exactly). */
+    float combined_rot[3][3], eye_pos[3];
+    const float zero[3] = { 0.0f, 0.0f, 0.0f };
+    vr_camera_view_basis(base_rot, zero, combined_rot, eye_pos);
+    float ux = combined_rot[0][2], uy = combined_rot[1][2], uz = combined_rot[2][2];
+    /* ray(x, y) = (X, Y, -1), X = x*(r-l)/2 + (r+l)/2, Y = y*(u-d)/2 + (u+d)/2;
+     * dot(ray, up) = a*x + b*y + c. */
+    *out_a = ux * (tan_right - tan_left) * 0.5f;
+    *out_b = uy * (tan_up - tan_down) * 0.5f;
+    *out_c = ux * (tan_right + tan_left) * 0.5f + uy * (tan_up + tan_down) * 0.5f - uz;
+}

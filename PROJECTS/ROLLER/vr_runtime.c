@@ -1343,6 +1343,17 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
         build_mvp_vr_eye_projection(eye_mvp, &base_cam, &base_proj, &s_frame_views[i].fov);
         game_render_set_vr_eye_mvp(g_pGameRenderer, eye_mvp);
 
+        /* The sky/ground split for this eye's own FOV (see vr_eye_sky_halfplane()),
+         * consumed by game_render_draw_sky() inside draw_road() below. */
+        {
+            float sky_a, sky_b, sky_c;
+            vr_eye_sky_halfplane(base_proj.view,
+                                 tanf(s_frame_views[i].fov.angleLeft), tanf(s_frame_views[i].fov.angleRight),
+                                 tanf(s_frame_views[i].fov.angleUp), tanf(s_frame_views[i].fov.angleDown),
+                                 &sky_a, &sky_b, &sky_c);
+            game_render_set_vr_sky_halfplane(sky_a, sky_b, sky_c);
+        }
+
         /* draw_road() recomputes calculateview()/calculatetransform() fresh
          * (redundant but harmless, see above) and queues this eye's draw
          * list into g_pGameRenderer's single windowless scene instance --
@@ -1353,6 +1364,7 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
         if (i == 0)
             vr_diag_far_plane_chunks(); /* camera globals still hold eye 0's composed camera */
         vr_camera_compose_clear_active_eye();
+        game_render_clear_vr_sky_halfplane();
 
         Uint32 image_index = 0;
         XrSwapchainImageAcquireInfo acquire_info = { .type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };

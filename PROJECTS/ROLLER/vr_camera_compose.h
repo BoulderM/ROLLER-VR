@@ -124,6 +124,28 @@ void vr_camera_compose_clear_active_eye(void);
  * caller must then write vk1..vk9/viewx/y/z/worlddirn/worldelev/worldtilt
  * from the results. Returns false (and writes NOTHING to any output) if no
  * eye pose is active. */
+/* --- VR eye sky/ground half-plane ---------------------------------------
+ * The flat game splits its sky and ground clear colours along a horizon line
+ * computed from VIEWDIST and the flat window (game_render_draw_sky()). A VR
+ * eye has its own, wider, asymmetric FOV, so that line sits at the wrong
+ * height in the eye (about 2.4x too far from the centre vertically) and
+ * moves faster than the world as the head pitches or rolls: whole regions
+ * flip between sky and ground colour and distant buildings look like they
+ * float above, or sink into, the ground.
+ *
+ * This computes the eye's true horizon instead. base_rot is the eye's fully
+ * composed camera rotation in the vk1..vk9 [row][col] convention (the same
+ * input vr_camera_view_basis() takes); tan_* are the tangents of the eye's
+ * XrFovf angles (left/down negative). World +Z is up. On return, an eye NDC
+ * point (x, y) (y up, before the shader compiler's Y flip) looks at sky when
+ * a*x + b*y + c > 0 and at ground when it is < 0: the view ray through that
+ * point, (X, Y, -1) in OpenXR eye space with X = lerp(tan_left, tan_right)
+ * and Y = lerp(tan_down, tan_up), has a positive world-up component. */
+void vr_eye_sky_halfplane(const float base_rot[3][3],
+                          float tan_left, float tan_right,
+                          float tan_up, float tan_down,
+                          float *out_a, float *out_b, float *out_c);
+
 bool vr_camera_compose_apply(float rot[3][3], float pos[3],
                               int *out_yaw, int *out_pitch, int *out_roll);
 

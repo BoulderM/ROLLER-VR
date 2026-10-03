@@ -346,6 +346,13 @@ void game_render_draw_sky(GameRenderer *renderer,
                           const GameRenderCamera *camera,
                           const GameRenderProjection *projection);
 
+/* VR only: the current eye's sky/ground half-plane in eye NDC (sky where
+ * a*x + b*y + c > 0, see vr_eye_sky_halfplane()). While set, the GPU sky
+ * pass splits sky and ground along it instead of the flat-window horizon.
+ * Set before an eye's draw_road(), cleared right after it. */
+void game_render_set_vr_sky_halfplane(float a, float b, float c);
+void game_render_clear_vr_sky_halfplane(void);
+
 // Draw — HUD sprites
 void game_render_sprite(GameRenderer *renderer, int slot, int blockIdx,
                         int x, int y, int transparentColorIndex,

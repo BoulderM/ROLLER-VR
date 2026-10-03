@@ -1066,6 +1066,18 @@ static int clip_sky_poly_ndc(float hx, float hy, float nx, float ny,
 }
 #endif
 
+static bool  s_vrSkyActive = false;
+static float s_vrSkyA, s_vrSkyB, s_vrSkyC;
+
+void game_render_set_vr_sky_halfplane(float a, float b, float c) {
+    s_vrSkyA = a; s_vrSkyB = b; s_vrSkyC = c;
+    s_vrSkyActive = true;
+}
+
+void game_render_clear_vr_sky_halfplane(void) {
+    s_vrSkyActive = false;
+}
+
 void game_render_draw_sky(GameRenderer *renderer,
                           const GameRenderCamera *camera,
                           const GameRenderProjection *projection) {
@@ -1105,7 +1117,29 @@ void game_render_draw_sky(GameRenderer *renderer,
             int   groundColor = -1;
             float skyPolyX[5], skyPolyY[5]; int skyPolyN = 0; bool skyAnyGround = false;
 
-            if ((textures_off & TEX_OFF_HORIZON) == 0) {
+            if ((textures_off & TEX_OFF_HORIZON) == 0 && s_vrSkyActive) {
+                /* VR eye: split along the eye's own horizon (sky where
+                 * a*x + b*y + c > 0), not the flat-window one below, which
+                 * sits at the wrong height in the eye's FOV and moves faster
+                 * than the world as the head pitches or rolls. */
+                float a = s_vrSkyA, b = s_vrSkyB, c = s_vrSkyC;
+                static const float ccx[4] = {-1.f,+1.f,+1.f,-1.f};
+                static const float ccy[4] = {-1.f,-1.f,+1.f,+1.f};
+                bool anySky = false;
+                for (int i = 0; i < 4; i++) {
+                    float d = a*ccx[i] + b*ccy[i] + c;
+                    if (d < 0.f) skyAnyGround = true;
+                    else anySky = true;
+                }
+                if (skyAnyGround) {
+                    groundColor = (int)(uint8)HorizonColour[front_sec];
+                    if (anySky) {
+                        float nn = a*a + b*b;  /* > 0 whenever the screen has both sides */
+                        skyPolyN = clip_sky_poly_ndc(-c*a/nn, -c*b/nn, a, b, skyPolyX, skyPolyY);
+                    }
+                }
+                /* No ground corner: all sky, groundColor stays -1. */
+            } else if ((textures_off & TEX_OFF_HORIZON) == 0) {
                 if (fSinElev < -0.7f) {
                     /* All ground — clear with ground, no sky quad needed. */
                     groundColor  = (int)(uint8)HorizonColour[front_sec];
