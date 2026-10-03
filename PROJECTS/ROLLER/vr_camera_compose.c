@@ -103,7 +103,12 @@ void vr_camera_angles_from_rotation(const float rot[3][3],
      * projection() (via vr_camera_view_basis() below) relies on the same
      * convention. */
     float fx = rot[0][2], fy = rot[1][2], fz = rot[2][2];
-    float ux = rot[0][1], uy = rot[1][1], uz = rot[2][1];
+    /* Roll reference vector = MINUS column 0, not the up column (col 1):
+     * getworldangles()'s roll vector (sR*sP*cY - cR*sY, sR*sP*sY + cR*cY,
+     * -sR*cP) is exactly -(vk1, vk4, vk7) of calculatetransform()
+     * (transfrm.c:43-57) for the same (yaw, pitch, tilt). Using col 1 here
+     * gave a constant 90-degree bank error (tests (e)). */
+    float ux = -rot[0][0], uy = -rot[1][0], uz = -rot[2][0];
 
     /* Azimuth from the forward vector's horizontal projection -- mirrors
      * getworldangles()'s "iNewAzimuth = getangle(fProjX, fProjY)". */

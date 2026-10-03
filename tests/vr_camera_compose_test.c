@@ -259,6 +259,38 @@ int main(void)
             { printf("FAIL: (d) pitch round-trip got %d expected ~%d\n", outPitch, pitchIn); g_failures++; }
     }
 
+    /* (e) Bank (tilt) round-trip, non-circular: each matrix below is a
+     * literal precomputed (in double precision, outside this code) from
+     * calculatetransform()'s own vk1..vk9 formulas (transfrm.c:43-57,
+     * iTrackChunkIdx == -1) for the listed (iDirection, iElevation, iTilt).
+     * The extractor must hand back that same tilt as its bank, as
+     * getworldangles() (transfrm.c:908-993) would -- in particular an
+     * identity-tilt camera must report bank 0, not a 90-degree roll
+     * (regression: bank was once read from the up column, col 1, instead
+     * of minus the side column, col 0, tilting the horizon by 90 deg). */
+    {
+        static const struct { int d, e, t; float m[3][3]; } cases[] = {
+        { 0x0000, 0x0000, 0x0000, { {0.0000000f, -0.0000000f, 1.0000000f}, {-1.0000000f, 0.0000000f, 0.0000000f}, {0.0000000f, 1.0000000f, 0.0000000f} } },
+        { 0x0000, 0x0000, 0x0400, { {0.0000000f, -0.0000000f, 1.0000000f}, {-0.9238795f, 0.3826834f, 0.0000000f}, {0.3826834f, 0.9238795f, 0.0000000f} } },
+        { 0x0000, 0x0000, 0x2000, { {-0.0000000f, 0.0000000f, 1.0000000f}, {1.0000000f, 0.0000000f, 0.0000000f}, {0.0000000f, -1.0000000f, 0.0000000f} } },
+        { 0x1000, 0x0300, 0x0200, { {0.9807853f, -0.1950903f, 0.0000000f}, {-0.0566317f, -0.2847069f, 0.9569403f}, {0.1866898f, 0.9385530f, 0.2902847f} } },
+        { 0x0123, 0x0456, 0x0789, { {-0.1943784f, -0.3781849f, 0.9050929f}, {-0.7650348f, 0.6359514f, 0.1014272f}, {0.6139534f, 0.6727124f, 0.4129399f} } },
+        { 0x3000, 0x0200, 0x2100, { {0.9951847f, -0.0980171f, -0.0000000f}, {-0.0191222f, -0.1941509f, -0.9807853f}, {-0.0961338f, -0.9760625f, 0.1950903f} } },
+        };
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            int y, p, r;
+            vr_camera_angles_from_rotation(cases[i].m, &y, &p, &r);
+            int dy = ((y - cases[i].d) & 0x3FFF); if (dy > 8192) dy -= 16384;
+            int dp = ((p - cases[i].e) & 0x3FFF); if (dp > 8192) dp -= 16384;
+            int dr = ((r - cases[i].t) & 0x3FFF); if (dr > 8192) dr -= 16384;
+            if (abs(dy) > 2 || abs(dp) > 2 || abs(dr) > 2) {
+                printf("FAIL: (e) case %zu in (0x%04X,0x%04X,0x%04X) got (0x%04X,0x%04X,0x%04X)\n",
+                       i, cases[i].d, cases[i].e, cases[i].t, y, p, r);
+                g_failures++;
+            }
+        }
+    }
+
     if (g_failures == 0) { printf("ALL PASS\n"); return 0; }
     printf("%d CHECK(S) FAILED\n", g_failures);
     return 1;
