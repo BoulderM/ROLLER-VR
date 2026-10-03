@@ -829,9 +829,11 @@ float vr_resolve_meters_to_world(void)
     if (g_fVRMetersToWorldOverride > 0.0f)
         return g_fVRMetersToWorldOverride;
 
-    /* One scale for the whole session, taken from Car[0]'s design. ViewType[0]
-     * (3d.c) is the car the camera follows and can differ from Car[0], but the
-     * designs are close in size, so this only matters for f1wack (index 12). */
+    /* One scale for the whole session, derived from Car[0]'s hitbox so it never
+     * changes mid-session. The camera follows ViewType[0], which intro replay cuts
+     * can switch to another car: 13 of 14 designs are within ~0.3% of each other's
+     * length, but f1wack (index 12) is ~24% longer, so on an f1wack cut the car
+     * reads ~24% longer than Car[0]'s. Accepted. */
     int carDesignIdx = Car[0].byCarDesignIdx;
     const tVec3 *pBox = CarBox.hitboxAy[carDesignIdx];
     /* CalcCarSizes() corner layout: [0]=(xLow,yLow,zLow), [1]=(xHigh,yLow,zLow),
@@ -847,7 +849,7 @@ float vr_resolve_meters_to_world(void)
                                 "X=%.3f Y=%.3f (expected positive) -- falling back to 100 "
                                 "world units/meter", carDesignIdx, (double)xSpan, (double)ySpan);
         }
-        return 100.0f;
+        return 100.0f; /* Last-resort default, used only for a degenerate hitbox (not the old placeholder). */
     }
 
     if (lengthWU != s_cached_length_wu) {

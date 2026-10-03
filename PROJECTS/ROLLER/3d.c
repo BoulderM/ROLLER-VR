@@ -45,6 +45,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <float.h>
 #include <string.h>
 #include <assert.h>
 #include <stdarg.h>
@@ -3065,8 +3066,8 @@ int main(int argc, const char **argv, const char **envp)
       if (i + 1 < argc) {
         char *pEnd = NULL;
         double dValue = strtod(argv[i + 1], &pEnd);
-        if (!pEnd || *pEnd != '\0' || dValue <= 0.0) {
-          cli_fprintf(stderr, "ERROR: '--vr-meters-to-world' expects a positive number\n");
+        if (!pEnd || *pEnd != '\0' || !isfinite(dValue) || dValue <= 0.0 || dValue > FLT_MAX) {
+          cli_fprintf(stderr, "ERROR: '--vr-meters-to-world' expects a positive finite number (at most about 3.4e38)\n");
           return 1;
         }
         g_fVRMetersToWorldOverride = (float)dValue;
