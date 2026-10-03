@@ -2318,6 +2318,14 @@ void DisplayCarSmoke(int carIdx, const CarRenderPose *pose)
                 game_render_quad_screen(g_pGameRenderer, &CarPol, game_render_get_texture_handle(g_pGameRenderer, 18), NULL);
         } else {
             float proj = (double)VIEWDIST * p->fSize * invZ;
+            /* The size cut (iSize >= 100: the puff is within 100/VIEWDIST
+             * times its own size of the camera) uses the view-axis depth
+             * camZ. In a VR eye camZ changes as the head turns (camZ =
+             * distance * cos(off-axis angle)), so the same puff would be cut
+             * or not depending on where the head points; use the straight-
+             * line distance there instead (equal to camZ dead ahead). */
+            if (vrEye)
+                proj = (double)VIEWDIST * p->fSize / sqrtf(dx * dx + dy * dy + dz * dz);
             int iSize = d2i(proj);
             if (iSize <= 0 || iSize >= 100) {
                 if (iSize >= 100) game_render_vr_diag_effect_cut(wx, wy, wz, 1);
