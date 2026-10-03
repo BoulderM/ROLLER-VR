@@ -4851,6 +4851,13 @@ static void surface_uv_log(const char *type, int texId, int surfIdx, int surface
 static bool scene_render_gpu_quad_frustum_culled(const SceneRendererGPU *r,
                                                   const SceneRenderVertex verts[4])
 {
+    /* M2: this cull's symmetric-FOV/640x400-fallback NDC margin test doesn't
+     * match a VR eye's real asymmetric FOV/resolution (see Task 3) even
+     * though the camera orientation itself is now correct (Task 2) -- skip
+     * it in VR and rely on GPU hardware clipping, which this function's own
+     * doc comment already confirms is a correct (if slower) fallback. */
+    if (g_bVRMode) return false;
+
     float fwd_x = r->proj.view[0][2], fwd_y = r->proj.view[1][2], fwd_z = r->proj.view[2][2];
     float cx = r->camera.viewX, cy = r->camera.viewY, cz = r->camera.viewZ;
 
