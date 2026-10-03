@@ -14,6 +14,9 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
+#if defined(ROLLER_VR_BUILD)
+#include "vr_camera_compose.h"  /* vr_eye_view_to_ndc() */
+#endif
 
 struct GameRenderer {
     GameRenderMode mode;
@@ -881,6 +884,41 @@ void game_render_free_blocks(GameRenderer *renderer, int slot) {
 
 // Draw calls
 
+#if !defined(IS_WASM)
+/* GPU particle quad at NDC corners, through the dedicated depth-tested pipeline
+ * (depth from game_render_set_particle_depth*()). */
+static void gpu_particle_quad_ndc(GameRenderer *renderer, int surfaceType,
+                                  const uint8 *palette_remap, TextureHandle handle,
+                                  float ndcX[4], float ndcY[4]) {
+    int colorIdx = surfaceType & 0xFF;
+    if (palette_remap)
+        colorIdx = palette_remap[colorIdx] & 0xFF;
+    const tColor *c = &palette[colorIdx];
+    float cr = (float)c->byR / 63.0f;
+    float cg = (float)c->byG / 63.0f;
+    float cb = (float)c->byB / 63.0f;
+    float ca = (surfaceType & SURFACE_FLAG_TRANSPARENT) ? 0.5f : 1.0f;
+    if (handle == TEXTURE_HANDLE_INVALID) {
+        scene_render_gpu_screen_quad_flat(renderer->gpu, ndcX, ndcY, cr, cg, cb, ca);
+        return;
+    }
+    /* Tile index lives in the low byte of iSurfaceType, same as the SW path.
+     * For cargen (tex_idx 18) use the particle-variant tiles where palette index 0 is
+     * opaque white, so (texture × vertex_colour) gives the smoke/fire tint.  SW's POLYTEX
+     * substitutes index 0 with the car's runtime colour; this is the GPU equivalent. */
+    int tex_idx_gpu = game_render_texture_index_from_handle(handle);
+    int tile_idx    = surfaceType & SURFACE_MASK_TEXTURE_INDEX;
+    SDL_GPUTexture *gpuTex = (tex_idx_gpu == 18)
+        ? scene_render_gpu_get_particle_tile_texture(renderer->gpu, 18, tile_idx)
+        : scene_render_gpu_get_tile_texture(renderer->gpu, tex_idx_gpu, tile_idx);
+    if (gpuTex && scene_render_gpu_screen_quad_textured(renderer->gpu, ndcX, ndcY,
+                                                        gpuTex, cr, cg, cb, ca))
+        return;
+    /* Tile unavailable — flat colour on the GPU depth-tested path. */
+    scene_render_gpu_screen_quad_flat(renderer->gpu, ndcX, ndcY, cr, cg, cb, ca);
+}
+#endif
+
 void game_render_quad_screen(GameRenderer *renderer, tPolyParams *poly,
                       TextureHandle handle,
                       const uint8 *palette_remap) {
@@ -891,38 +929,13 @@ void game_render_quad_screen(GameRenderer *renderer, tPolyParams *poly,
     /* GPU mode: route particles through the dedicated depth-tested pipeline so they
      * are occluded by solid geometry instead of blitting over everything via SW overlay. */
     if (renderer->mode == GAME_RENDER_GPU && renderer->gpu && !renderer->splitScreen) {
-        int colorIdx = poly->iSurfaceType & 0xFF;
-        if (palette_remap)
-            colorIdx = palette_remap[colorIdx] & 0xFF;
-        const tColor *c = &palette[colorIdx];
-        float cr = (float)c->byR / 63.0f;
-        float cg = (float)c->byG / 63.0f;
-        float cb = (float)c->byB / 63.0f;
-        float ca = (poly->iSurfaceType & SURFACE_FLAG_TRANSPARENT) ? 0.5f : 1.0f;
         float ww = (float)winw, wh = (float)winh;
         float ndcX[4], ndcY[4];
         for (int i = 0; i < 4; i++) {
             ndcX[i] = (float)poly->vertices[i].x / ww * 2.0f - 1.0f;
             ndcY[i] = 1.0f - (float)poly->vertices[i].y / wh * 2.0f;
         }
-        if (handle == TEXTURE_HANDLE_INVALID) {
-            scene_render_gpu_screen_quad_flat(renderer->gpu, ndcX, ndcY, cr, cg, cb, ca);
-            return;
-        }
-        /* Tile index lives in the low byte of iSurfaceType, same as the SW path.
-         * For cargen (tex_idx 18) use the particle-variant tiles where palette index 0 is
-         * opaque white, so (texture × vertex_colour) gives the smoke/fire tint.  SW's POLYTEX
-         * substitutes index 0 with the car's runtime colour; this is the GPU equivalent. */
-        int tex_idx_gpu = game_render_texture_index_from_handle(handle);
-        int tile_idx    = poly->iSurfaceType & SURFACE_MASK_TEXTURE_INDEX;
-        SDL_GPUTexture *gpuTex = (tex_idx_gpu == 18)
-            ? scene_render_gpu_get_particle_tile_texture(renderer->gpu, 18, tile_idx)
-            : scene_render_gpu_get_tile_texture(renderer->gpu, tex_idx_gpu, tile_idx);
-        if (gpuTex && scene_render_gpu_screen_quad_textured(renderer->gpu, ndcX, ndcY,
-                                                            gpuTex, cr, cg, cb, ca))
-            return;
-        /* Tile unavailable — flat colour on the GPU depth-tested path. */
-        scene_render_gpu_screen_quad_flat(renderer->gpu, ndcX, ndcY, cr, cg, cb, ca);
+        gpu_particle_quad_ndc(renderer, poly->iSurfaceType, palette_remap, handle, ndcX, ndcY);
         return;
     }
 #endif
@@ -1080,6 +1093,49 @@ void game_render_set_vr_sky_halfplane(float a, float b, float c) {
 
 void game_render_clear_vr_sky_halfplane(void) {
     s_vrSkyActive = false;
+}
+
+/* VR only: the current eye's projection for screen-space effects. */
+static bool  s_vrEyeProjActive = false;
+static float s_vrEyeTan[4], s_vrEyeNear, s_vrEyeFar;
+
+void game_render_set_vr_eye_projection(float tan_left, float tan_right,
+                                       float tan_up, float tan_down,
+                                       float near_plane, float far_plane) {
+    s_vrEyeTan[0] = tan_left; s_vrEyeTan[1] = tan_right;
+    s_vrEyeTan[2] = tan_up;   s_vrEyeTan[3] = tan_down;
+    s_vrEyeNear = near_plane; s_vrEyeFar = far_plane;
+    s_vrEyeProjActive = true;
+}
+
+void game_render_clear_vr_eye_projection(void) {
+    s_vrEyeProjActive = false;
+}
+
+bool game_render_vr_eye_active(void) {
+    return s_vrEyeProjActive;
+}
+
+bool game_render_vr_eye_project(float vx, float vy, float vz,
+                                float *outNdcX, float *outNdcY, float *outNdcZ) {
+#if defined(ROLLER_VR_BUILD)
+    if (!s_vrEyeProjActive) return false;
+    return vr_eye_view_to_ndc(vx, vy, vz, s_vrEyeTan[0], s_vrEyeTan[1], s_vrEyeTan[2], s_vrEyeTan[3],
+                              s_vrEyeNear, s_vrEyeFar, outNdcX, outNdcY, outNdcZ);
+#else
+    (void)vx; (void)vy; (void)vz; (void)outNdcX; (void)outNdcY; (void)outNdcZ;
+    return false;
+#endif
+}
+
+void game_render_quad_ndc(GameRenderer *renderer, int surfaceType,
+                          float ndcX[4], float ndcY[4], TextureHandle handle) {
+#if !defined(IS_WASM)
+    if (renderer && renderer->mode == GAME_RENDER_GPU && renderer->gpu && !renderer->splitScreen)
+        gpu_particle_quad_ndc(renderer, surfaceType, NULL, handle, ndcX, ndcY);
+#else
+    (void)renderer; (void)surfaceType; (void)ndcX; (void)ndcY; (void)handle;
+#endif
 }
 
 /* VR headset-free test hook: per-eye placement error of world-anchored

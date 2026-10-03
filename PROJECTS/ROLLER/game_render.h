@@ -353,6 +353,28 @@ void game_render_draw_sky(GameRenderer *renderer,
 void game_render_set_vr_sky_halfplane(float a, float b, float c);
 void game_render_clear_vr_sky_halfplane(void);
 
+/* VR only: the current eye's own projection (XrFovf tangents, left/down
+ * negative, and the eye's near/far planes in world units) for screen-space
+ * effects that the game projects on the CPU (smoke, sparks, name tags).
+ * Set before an eye's draw_road(), cleared right after it, like the sky
+ * half-plane. While set, game_render_vr_eye_active() is true and
+ * game_render_vr_eye_project() maps an engine camera-space point (vx, vy,
+ * vz from vk1..vk9) to eye NDC x, y (y up) and depth through the same
+ * projection the eye's world geometry uses (vr_eye_view_to_ndc()), instead
+ * of the flat window's VIEWDIST/xbase/ybase/scr_size and winw/winh. It
+ * returns false when not in a VR eye (always in the flat build) or vz <= 0. */
+void game_render_set_vr_eye_projection(float tan_left, float tan_right,
+                                       float tan_up, float tan_down,
+                                       float near_plane, float far_plane);
+void game_render_clear_vr_eye_projection(void);
+bool game_render_vr_eye_active(void);
+bool game_render_vr_eye_project(float vx, float vy, float vz,
+                                float *outNdcX, float *outNdcY, float *outNdcZ);
+/* game_render_quad_screen()'s GPU particle path with NDC corners instead of
+ * flat-window pixels (no palette remap); does nothing outside GPU mode. */
+void game_render_quad_ndc(GameRenderer *renderer, int surfaceType,
+                          float ndcX[4], float ndcY[4], TextureHandle handle);
+
 /* VR headset-free test hook. Inside a VR eye's draw_road(), records how far a
  * world-anchored screen-space effect (smoke, sparks) was placed, in eye NDC,
  * from where the eye's own MVP puts its world point (wx, wy, wz). _take()

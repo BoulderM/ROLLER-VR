@@ -2219,10 +2219,18 @@ void DisplayCarSmoke(int carIdx, const CarRenderPose *pose)
         SmokePt[0][i].screen.y = sy;
         SmokePt[0][i].view.fZ  = camZ;
 
+        /* VR eye: place the particle through the eye's own projection (eye
+         * NDC and depth, see game_render_vr_eye_project()), not the flat
+         * window's, so it stays on its world point as the head turns. */
+        float eyeX = 0.0f, eyeY = 0.0f, eyeZ = 0.0f;
+        bool vrEye = game_render_vr_eye_project(vx, vy, camZ, &eyeX, &eyeY, &eyeZ);
+
         /* GPU depth for this particle, matching the perspective formula in build_mvp.
          * Tiny forward bias covers CPU vs GPU float rounding (a few ULPs).
          * Keep it minimal so crash-smoke at wall depth doesn't bleed through. */
-        float gndcZ = (camZ - SCENE_GPU_NEAR) * (SCENE_GPU_FAR / (SCENE_GPU_FAR - SCENE_GPU_NEAR)) / camZ;
+        float gndcZ = vrEye ? eyeZ
+                            : (camZ - SCENE_GPU_NEAR) * (SCENE_GPU_FAR / (SCENE_GPU_FAR - SCENE_GPU_NEAR)) / camZ;
+        if (vrEye && gndcZ > 1.0f) gndcZ = 1.0f;  /* beyond the eye's far plane: clamped like the geometry */
         gndcZ -= 0.000002f;
         /* MAYTE's nitro flame sits low and close to the car body -- the tiny bias
          * above isn't quite enough to keep it from being clipped by the car's own
@@ -2253,6 +2261,33 @@ void DisplayCarSmoke(int carIdx, const CarRenderPose *pose)
             int sy2 = (scr_size * (199 - d2i((double)VIEWDIST * svy * invZ2 + ybase))) >> 6;
             SmokePt[1][i].screen.x = sx2;
             SmokePt[1][i].screen.y = sy2;
+
+            if (vrEye) {
+                /* Same streak in eye NDC: tail at the tail point, half-width
+                 * p->fSize at the head's depth (as iTemp below). */
+                float tX, tY, tZ, wX, wY, wZ;
+                game_render_vr_eye_project(svx, svy, clamp2, &tX, &tY, &tZ);
+                game_render_vr_eye_project(vx + p->fSize, vy, camZ, &wX, &wY, &wZ);
+                float hw = wX - eyeX;
+                float qx[4] = { tX + hw, tX - hw, eyeX - hw, eyeX + hw };
+                float qy[4] = { tY, tY, eyeY, eyeY };
+                if (camZ2 > SCENE_GPU_NEAR) {
+                    float tailNdcZ = tZ > 1.0f ? 1.0f : tZ;
+                    tailNdcZ -= 0.000002f;
+                    if (pCar->byCarDesignIdx == CAR_DESIGN_MAYTE)
+                      tailNdcZ -= MAYTE_FLAME_DEPTH_BIAS;
+                    if (tailNdcZ < 0.0f) tailNdcZ = 0.0f;
+                    const float ndcZv[4] = {tailNdcZ, tailNdcZ, gndcZ, gndcZ};
+                    game_render_set_particle_depth_pervertex(g_pGameRenderer, ndcZv);
+                }
+                game_render_vr_diag_effect(wx, wy, wz, eyeX, eyeY);
+                uint32 surf = p->iColor | SURFACE_FLAG_FLIP_BACKFACE;
+                game_render_quad_ndc(g_pGameRenderer, (int)surf, qx, qy,
+                                     (surf & SURFACE_FLAG_APPLY_TEXTURE) == 0
+                                         ? TEXTURE_HANDLE_INVALID
+                                         : game_render_get_texture_handle(g_pGameRenderer, 18));
+                continue;
+            }
 
             int iTemp = (scr_size * d2i((double)VIEWDIST * p->fSize * invZ)) >> 6;
             uint32 surf = p->iColor | SURFACE_FLAG_FLIP_BACKFACE;
@@ -2286,6 +2321,21 @@ void DisplayCarSmoke(int carIdx, const CarRenderPose *pose)
             int iSize = d2i(proj);
             if (iSize <= 0 || iSize >= 100) {
                 if (iSize >= 100) game_render_vr_diag_effect_cut(wx, wy, wz, 1);
+                continue;
+            }
+            if (vrEye) {
+                /* Square puff, half-size p->fSize in camera space at its depth. */
+                float rX, rY, rZ, uX, uY, uZ;
+                game_render_vr_eye_project(vx + p->fSize, vy, camZ, &rX, &rY, &rZ);
+                game_render_vr_eye_project(vx, vy + p->fSize, camZ, &uX, &uY, &uZ);
+                float hx = rX - eyeX, hy = uY - eyeY;
+                float qx[4] = { eyeX + hx, eyeX - hx, eyeX - hx, eyeX + hx };
+                float qy[4] = { eyeY + hy, eyeY + hy, eyeY - hy, eyeY - hy };
+                game_render_vr_diag_effect(wx, wy, wz, eyeX, eyeY);
+                game_render_quad_ndc(g_pGameRenderer, p->iColor, qx, qy,
+                                     (p->iColor & SURFACE_FLAG_APPLY_TEXTURE) == 0
+                                         ? TEXTURE_HANDLE_INVALID
+                                         : game_render_get_texture_handle(g_pGameRenderer, 18));
                 continue;
             }
             int scSize = (scr_size * iSize) >> 6;

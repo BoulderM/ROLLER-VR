@@ -1003,13 +1003,19 @@ void game_render_hw_draw_car_name_tag(int carIdx, const GameRenderCarPose *pose,
      * in the rearview mirror's flipped camera. */
     float leftOff = -(float)(texW / 2), rightOff = leftOff + (float)texW;
     float topOff  = -16.0f,             bottomOff = topOff + (float)texH;
-    if (scrX + rightOff <= 0 || scrX + leftOff >= winw
-        || scrY + bottomOff <= 0 || scrY + topOff >= winh)
+    /* VR eye: the tag is placed through the eye's own projection below (see
+     * game_render_vr_eye_project()), so the flat window's pixel rectangle is
+     * not the eye's view; the off-screen test is done in eye NDC instead. */
+    float vrX, vrY, vrZ;
+    bool vrEye = game_render_vr_eye_project((float)fVX0, (float)fVY0, (float)fCamZ0, &vrX, &vrY, &vrZ);
+    if (!vrEye && (scrX + rightOff <= 0 || scrX + leftOff >= winw
+        || scrY + bottomOff <= 0 || scrY + topOff >= winh))
         return;
 
     float zF = SCENE_GPU_FAR / (SCENE_GPU_FAR - SCENE_GPU_NEAR);
     float zB = -(SCENE_GPU_FAR * SCENE_GPU_NEAR) / (SCENE_GPU_FAR - SCENE_GPU_NEAR);
-    float tagDepth = zF + zB / (float)fCamZ0;
+    float tagDepth = vrEye ? (vrZ < 0.0f ? 0.0f : vrZ > 1.0f ? 1.0f : vrZ)
+                           : zF + zB / (float)fCamZ0;
 
     /* Project each corner from an offset in the SAME camera-space coordinates
      * (fVX0/fVY0/fClZ0) the anchor itself was derived from, inverting exactly
@@ -1043,7 +1049,22 @@ void game_render_hw_draw_car_name_tag(int carIdx, const GameRenderCarPose *pose,
     for (int i = 0; i < 4; i++) {
         double cFVX = fVX0 + (double)dx4[i] * pixToFv;
         double cFVY = fVY0 - (double)dy4[i] * pixToFv;
-        scene_render_gpu_project_to_ndc(gpu, cFVX, cFVY, fClZ0, &ndcX[i], &ndcY[i]);
+        float unusedZ;
+        if (!vrEye)
+            scene_render_gpu_project_to_ndc(gpu, cFVX, cFVY, fClZ0, &ndcX[i], &ndcY[i]);
+        else
+            game_render_vr_eye_project((float)cFVX, (float)cFVY, (float)fClZ0, &ndcX[i], &ndcY[i], &unusedZ);
+    }
+    if (vrEye) {
+        float minX = ndcX[0], maxX = ndcX[0], minY = ndcY[0], maxY = ndcY[0];
+        for (int i = 1; i < 4; i++) {
+            if (ndcX[i] < minX) minX = ndcX[i];
+            if (ndcX[i] > maxX) maxX = ndcX[i];
+            if (ndcY[i] < minY) minY = ndcY[i];
+            if (ndcY[i] > maxY) maxY = ndcY[i];
+        }
+        if (maxX <= -1.0f || minX >= 1.0f || maxY <= -1.0f || minY >= 1.0f)
+            return;  /* entirely outside the eye's view */
     }
     scene_render_gpu_set_particle_ndcz(gpu, tagDepth);
     scene_render_gpu_screen_quad_textured(gpu, ndcX, ndcY, s_tagLabelCache[carIdx].tex,
@@ -1055,7 +1076,11 @@ void game_render_hw_draw_car_name_tag(int carIdx, const GameRenderCarPose *pose,
     for (int i = 0; i < 4; i++) {
         double cFVX = fVX0 + (double)ttx4[i] * pixToFv;
         double cFVY = fVY0 - (double)tty4[i] * pixToFv;
-        scene_render_gpu_project_to_ndc(gpu, cFVX, cFVY, fClZ0, &tNdcX[i], &tNdcY[i]);
+        float unusedZ;
+        if (!vrEye)
+            scene_render_gpu_project_to_ndc(gpu, cFVX, cFVY, fClZ0, &tNdcX[i], &tNdcY[i]);
+        else
+            game_render_vr_eye_project((float)cFVX, (float)cFVY, (float)fClZ0, &tNdcX[i], &tNdcY[i], &unusedZ);
     }
     /* Textured (not flat) so this survives 2-player mode -- see
      * scene_render_gpu_get_flat_color_texture's comment: flat-particle quads

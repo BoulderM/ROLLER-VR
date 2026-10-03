@@ -957,6 +957,16 @@ static void vr_diag_far_plane_chunks(void)
  * What remains for this function is the asymmetric projection: build_mvp()'s
  * symmetric-FOV construction in scene_render_gpu.c cannot express an HMD's
  * asymmetric per-eye lens offset. */
+/* The eye's near plane in world units: 5cm, a typical VR near plane in
+ * real-world terms. For the stock car this is ~15.6 (the old 100-units/m
+ * placeholder gave 5.0), looser than SCENE_GPU_NEAR's 10.0f non-VR default;
+ * may need tuning for comfort on a real headset. Shared by the eye MVP and
+ * the screen-space effect projection so the two depths agree. */
+static float vr_eye_near_plane_wu(void)
+{
+    return 0.05f * vr_resolve_meters_to_world();
+}
+
 void build_mvp_vr_eye_projection(float mvp_out[16],
                                   const SceneRenderCamera *base_cam,
                                   const SceneRenderProjection *base_proj,
@@ -987,11 +997,7 @@ void build_mvp_vr_eye_projection(float mvp_out[16],
     float tan_right = tanf(fov->angleRight);
     float tan_up = tanf(fov->angleUp);
     float tan_down = tanf(fov->angleDown);
-    float near_plane_m = 0.05f;  /* 5cm, a typical VR near plane in real-world terms */
-    float near_plane = near_plane_m * vr_resolve_meters_to_world();  /* world units. For the
-                                 stock car this is ~15.6 (the old 100-units/m placeholder gave
-                                 5.0), looser than SCENE_GPU_NEAR's 10.0f non-VR default;
-                                 may need tuning for comfort on a real headset */
+    float near_plane = vr_eye_near_plane_wu();
     float far_plane = VR_EYE_FAR_PLANE_WU;
 
     /* mvp[11] = -1 below (w = -z_eye) assumes a -Z-forward eye space, which is exactly
@@ -1375,14 +1381,18 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
         game_render_set_vr_eye_mvp(g_pGameRenderer, eye_mvp);
 
         /* The sky/ground split for this eye's own FOV (see vr_eye_sky_halfplane()),
-         * consumed by game_render_draw_sky() inside draw_road() below. */
+         * consumed by game_render_draw_sky() inside draw_road() below, and the
+         * eye's projection for the screen-space effects (smoke, sparks, name
+         * tags) the game projects on the CPU inside draw_road() (see
+         * game_render_vr_eye_project()). */
         {
+            float tan_l = tanf(s_frame_views[i].fov.angleLeft), tan_r = tanf(s_frame_views[i].fov.angleRight);
+            float tan_u = tanf(s_frame_views[i].fov.angleUp),   tan_d = tanf(s_frame_views[i].fov.angleDown);
             float sky_a, sky_b, sky_c;
-            vr_eye_sky_halfplane(base_proj.view,
-                                 tanf(s_frame_views[i].fov.angleLeft), tanf(s_frame_views[i].fov.angleRight),
-                                 tanf(s_frame_views[i].fov.angleUp), tanf(s_frame_views[i].fov.angleDown),
-                                 &sky_a, &sky_b, &sky_c);
+            vr_eye_sky_halfplane(base_proj.view, tan_l, tan_r, tan_u, tan_d, &sky_a, &sky_b, &sky_c);
             game_render_set_vr_sky_halfplane(sky_a, sky_b, sky_c);
+            game_render_set_vr_eye_projection(tan_l, tan_r, tan_u, tan_d,
+                                              vr_eye_near_plane_wu(), VR_EYE_FAR_PLANE_WU);
         }
 
         /* draw_road() recomputes calculateview()/calculatetransform() fresh
@@ -1403,6 +1413,7 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
         }
         vr_camera_compose_clear_active_eye();
         game_render_clear_vr_sky_halfplane();
+        game_render_clear_vr_eye_projection();
 
         Uint32 image_index = 0;
         XrSwapchainImageAcquireInfo acquire_info = { .type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
