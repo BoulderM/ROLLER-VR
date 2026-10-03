@@ -182,3 +182,17 @@ void vr_eye_sky_halfplane(const float base_rot[3][3],
     *out_b = uy * (tan_up - tan_down) * 0.5f;
     *out_c = ux * (tan_right + tan_left) * 0.5f + uy * (tan_up + tan_down) * 0.5f - uz;
 }
+
+bool vr_eye_view_to_ndc(float vx, float vy, float vz,
+                        float tan_left, float tan_right,
+                        float tan_up, float tan_down,
+                        float near_plane, float far_plane,
+                        float *out_x, float *out_y, float *out_z)
+{
+    if (!(vz > 0.0f)) return false;
+    float X = vx / vz, Y = vy / vz;
+    *out_x = (2.0f * X - (tan_right + tan_left)) / (tan_right - tan_left);
+    *out_y = (2.0f * Y - (tan_up + tan_down)) / (tan_up - tan_down);
+    *out_z = far_plane / (far_plane - near_plane) * (vz - near_plane) / vz;
+    return true;
+}

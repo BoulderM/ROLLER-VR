@@ -149,6 +149,31 @@ void vr_eye_sky_halfplane(const float base_rot[3][3],
                           float tan_up, float tan_down,
                           float *out_a, float *out_b, float *out_c);
 
+/* --- VR eye projection of a camera-space point --------------------------
+ * Screen-space effects (smoke, sparks, car name tags) are projected on the
+ * CPU from engine camera space -- vx = d.(vk1,vk4,vk7) (right), vy =
+ * d.(vk2,vk5,vk8) (up), vz = d.(vk3,vk6,vk9) (forward depth), d = world
+ * point minus viewx/viewy/viewz -- with the flat window's VIEWDIST, xbase,
+ * ybase and scr_size. A VR eye has its own, wider, asymmetric FOV, so for a
+ * 42-degree half-FOV eye that puts them 1.8x (VIEWDIST 200) to 2.45x
+ * (VIEWDIST 270) too far from the centre vertically, 1.1x to 1.5x
+ * horizontally, shifted up by the flat window's ybase offset, and makes
+ * them slide against the world as the head turns.
+ *
+ * This maps the same camera-space point through the eye's own projection
+ * instead, the one build_mvp_vr_eye_projection() (vr_runtime.c) gives the
+ * world geometry: vr_camera_view_basis() makes eye X = vx, Y = vy, Z = -vz,
+ * then the OpenXR asymmetric projection from the XrFovf tangents (left/down
+ * negative) with near/far planes in world units and depth in [0, 1]. On
+ * return out_x/out_y are eye NDC (y up, before the shader compiler's Y flip,
+ * the convention the screen-quad path uses) and out_z the NDC depth (not
+ * clamped). Returns false, writing nothing, if vz <= 0. */
+bool vr_eye_view_to_ndc(float vx, float vy, float vz,
+                        float tan_left, float tan_right,
+                        float tan_up, float tan_down,
+                        float near_plane, float far_plane,
+                        float *out_x, float *out_y, float *out_z);
+
 #ifdef __cplusplus
 }
 #endif
