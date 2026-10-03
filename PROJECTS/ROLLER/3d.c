@@ -3296,6 +3296,19 @@ int main(int argc, const char **argv, const char **envp)
   if (strcmp(languagename, "Brazilian") == 0)
     g_bBrazilianMayte = true;
   InputLoadConfig();
+#if defined(ROLLER_VR_BUILD)
+  if (g_bVRMode) {
+    /* M2: force whole-track-within-draw-distance in VR, overriding whatever
+     * the user's FATAL.INI InfiniteDrawDistance/ForceMaxDraw setting is.
+     * CalcVisibleTrack()'s one-contiguous-chunk-run model (drawtrk3.c) has
+     * no frustum/extent data to decide "which runs does a 90-degree head
+     * turn need" -- drawing the whole track is the existing, already-
+     * special-cased fallback (DrawCars()/CalcVisibleBuildings() already ride
+     * on it for free, confirmed by reading both). Must run AFTER
+     * InputLoadConfig() above, the only other startup writer of this flag. */
+    g_fDrawDistanceFraction = 1.0f;
+  }
+#endif
   loadcheatnames();
   cdxinit();
   GetFirstCDDrive();
