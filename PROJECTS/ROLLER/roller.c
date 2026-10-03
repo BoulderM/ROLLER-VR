@@ -128,6 +128,8 @@ int g_bVRFakeHead = 0;
 char g_szVREyeDumpDir[260] = { 0 };
 int g_iVREyeDumpEvery = 90; /* --vr-eye-dump-every N */
 int g_iVREyeDumpFrom = 0;   /* --vr-eye-dump-from F */
+int g_iVRFreezeFrom = -1;   /* --vr-freeze-from F */
+bool g_bVRTestFreeze = false; /* set by vr_run_frame() once --vr-freeze-from is reached */
 bool g_bPaletteSet = false;
 float g_fDrawDistanceFraction = 1.0f;
 bool g_bNoCollisionLimit = true;
@@ -2251,7 +2253,8 @@ void UpdateSDL()
 #endif
 
   /* Shift freeze: block all tick steps so the engine image holds still. */
-  g_bShiftFrozen = g_bShiftFreezeEnabled && s_shiftPressedMs != 0;
+  g_bShiftFrozen = (g_bShiftFreezeEnabled && s_shiftPressedMs != 0)
+                   || g_bVRTestFreeze; /* --vr-freeze-from: same tick block, VR test runs only */
   if (g_bShiftFrozen)
     SDL_SetAtomicInt(&iTicksPending, 0);
 

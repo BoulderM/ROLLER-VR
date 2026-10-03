@@ -1112,6 +1112,12 @@ bool vr_run_frame(void)
      * this function call -- s_frame_views/s_should_render_this_tick above
      * are what it reads, and it fills s_projection_views/
      * s_frame_view_count_for_layer for the xrEndFrame call below. */
+    /* --vr-freeze-from F: from presented frame F on, block game ticks (the
+     * same block SHIFT-freeze uses) so the world stands still and only the
+     * head pose changes between frames -- adjacent eye dumps then differ
+     * only by what the head motion reveals or hides. */
+    if (g_iVRFreezeFrom >= 0 && s_vr_frames_presented >= g_iVRFreezeFrom)
+        g_bVRTestFreeze = true;
     bool keep_running = main_loop_iteration() != 0;
     /* End of the CPU-side frame window for the diag log's cpuMs= figure.
      * Taken here, before xrEndFrame(), so compositor wait time is excluded. */

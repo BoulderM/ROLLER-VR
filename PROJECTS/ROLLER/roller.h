@@ -83,6 +83,8 @@ extern int g_bVRFakeHead;              /* --vr-fake-head: scripted head-pose swe
 extern char g_szVREyeDumpDir[260];     /* --vr-eye-dump-dir DIR: in-process PNG dump of each eye, every 90 presented frames */
 extern int g_iVREyeDumpEvery;          /* --vr-eye-dump-every N: dump interval in presented frames (default 90) */
 extern int g_iVREyeDumpFrom;           /* --vr-eye-dump-from F: first presented frame eligible for a dump (default 0) */
+extern int g_iVRFreezeFrom;            /* --vr-freeze-from F: freeze game ticks from presented frame F (-1 = off) */
+extern bool g_bVRTestFreeze;           /* true once --vr-freeze-from is reached; ORed into g_bShiftFrozen */
 
 // Debug overlay accessor
 struct DebugOverlay;

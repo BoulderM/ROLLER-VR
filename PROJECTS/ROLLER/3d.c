@@ -642,6 +642,7 @@ static void print_usage(FILE *f, const char *argv0)
   cli_fprintf(f, " --vr-eye-dump-dir DIR   with --vr: write each eye's rendered frame to DIR as PNG every 90 frames\n");
   cli_fprintf(f, " --vr-eye-dump-every N   with --vr-eye-dump-dir: dump every N presented frames instead of 90\n");
   cli_fprintf(f, " --vr-eye-dump-from F    with --vr-eye-dump-dir: no dumps before presented frame F\n");
+  cli_fprintf(f, " --vr-freeze-from F      with --vr: freeze game ticks from presented frame F, so only the head moves (testing)\n");
 #endif
   cli_fprintf(f, " --track-path PATH       load a track directly from an absolute path\n");
   cli_fprintf(f, " --track-asset-root DIR  resolve direct-track assets from this document root first\n");
@@ -3092,6 +3093,20 @@ int main(int argc, const char **argv, const char **envp)
         consumed = 2;
       } else {
         cli_fprintf(stderr, "ERROR: '--vr-eye-dump-dir' needs an argument\n");
+        return 1;
+      }
+    } else if (strcmp(argv[i], "--vr-freeze-from") == 0) {
+      if (i + 1 < argc) {
+        char *pEnd = NULL;
+        long lValue = strtol(argv[i + 1], &pEnd, 10);
+        if (!pEnd || *pEnd != '\0' || lValue < 0 || lValue > 0x7FFFFFFF) {
+          cli_fprintf(stderr, "ERROR: '--vr-freeze-from' expects a non-negative integer\n");
+          return 1;
+        }
+        g_iVRFreezeFrom = (int)lValue;
+        consumed = 2;
+      } else {
+        cli_fprintf(stderr, "ERROR: '--vr-freeze-from' needs an argument\n");
         return 1;
       }
     } else if (strcmp(argv[i], "--vr-eye-dump-every") == 0 || strcmp(argv[i], "--vr-eye-dump-from") == 0) {
