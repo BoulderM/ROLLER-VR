@@ -96,19 +96,16 @@ static int vr_angle14(float x, float y)
 void vr_camera_angles_from_rotation(const float rot[3][3],
                                      int *out_yaw, int *out_pitch, int *out_roll)
 {
-    /* Forward = column 2, up = column 1 -- this header's own
-     * vr_camera_compose() derivation comment above establishes col 2 as
-     * this engine's world-forward column for a local-to-world matrix in
-     * this [row][col] convention; vr_runtime.c's build_mvp_vr_eye_
-     * projection() (via vr_camera_view_basis() below) relies on the same
-     * convention. */
+    /* Forward = column 2, roll vector = minus column 0 -- this header's own
+     * vr_camera_compose() derivation comment establishes col 2 as this
+     * engine's world-forward column for a local-to-world matrix in this
+     * [row][col] convention; vr_runtime.c's build_mvp_vr_eye_projection()
+     * (via vr_camera_view_basis() below) relies on the same convention. */
     float fx = rot[0][2], fy = rot[1][2], fz = rot[2][2];
-    /* Roll reference vector = MINUS column 0, not the up column (col 1):
-     * getworldangles()'s roll vector (sR*sP*cY - cR*sY, sR*sP*sY + cR*cY,
-     * -sR*cP) is exactly -(vk1, vk4, vk7) of calculatetransform()
-     * (transfrm.c:43-57) for the same (yaw, pitch, tilt). Using col 1 here
-     * gave a constant 90-degree bank error (tests (e)). */
-    float ux = -rot[0][0], uy = -rot[1][0], uz = -rot[2][0];
+    /* Roll vector = MINUS column 0 (not the up column): getworldangles()'s
+     * roll vector (sR*sP*cY - cR*sY, sR*sP*sY + cR*cY, -sR*cP) is exactly
+     * -(vk1, vk4, vk7) of calculatetransform() (transfrm.c:43-57). */
+    float rollx = -rot[0][0], rolly = -rot[1][0], rollz = -rot[2][0];
 
     /* Azimuth from the forward vector's horizontal projection -- mirrors
      * getworldangles()'s "iNewAzimuth = getangle(fProjX, fProjY)". */
@@ -125,13 +122,11 @@ void vr_camera_angles_from_rotation(const float rot[3][3],
     float cosEl = cosf((float)elevation * (2.0f * (float)M_PI / 16384.0f));
     float sinEl = sinf((float)elevation * (2.0f * (float)M_PI / 16384.0f));
 
-    /* Bank/roll: rotate the up vector by -azimuth then by -elevation, same
-     * as getworldangles()'s final four lines, using our up vector directly
-     * in place of its separately-constructed "roll vector" (ours is already
-     * in world coordinates, needing no further chunk transform). */
-    float rollRotatedX =  ux * cosAz + uy * sinAz;
-    float rollRotatedY = -ux * sinAz + uy * cosAz;
-    float finalX = rollRotatedX * sinEl - uz * cosEl;
+    /* Bank/roll: rotate the roll vector (minus column 0) by -azimuth then by
+     * -elevation, the same as getworldangles()'s final steps. */
+    float rollRotatedX =  rollx * cosAz + rolly * sinAz;
+    float rollRotatedY = -rollx * sinAz + rolly * cosAz;
+    float finalX = rollRotatedX * sinEl - rollz * cosEl;
     int bank = vr_angle14(rollRotatedY, finalX);
 
     *out_yaw = azimuth;

@@ -64,15 +64,11 @@ void vr_camera_compose(const float base_rot[3][3], const float base_pos[3],
  * same [row][col] convention as vk1..vk9/vr_camera_compose()'s out_rot.
  * Mirrors getworldangles()'s own azimuth-then-elevation-then-bank
  * decomposition (transfrm.c:908-993), using the matrix's forward column
- * (col 2) and up column (col 1) directly in place of that function's
- * Euler-angle-derived direction/roll vectors. Intermediate "rotate by
- * azimuth/elevation" steps use plain trigonometry (not the tsin/tcos
- * tables), since their outputs only feed the next angle-extraction step,
- * which re-quantizes to a 14-bit index anyway -- avoiding a dependency on
- * the game's runtime-populated trig tables keeps this module link-
- * independent of the rest of the game (see getangle()'s own reimplementation
- * below for why the FINAL index-producing step still matches its exact
- * formula/literal). */
+ * (col 2) and roll vector = minus column 0 (the engine's tilt rotates
+ * columns 0 and 1 about the forward axis, and the roll vector equals minus
+ * column 0). Intermediate "rotate by azimuth/elevation" steps use plain
+ * trigonometry (not the tsin/tcos tables), since their outputs only feed the
+ * next angle-extraction step, which re-quantizes to a 14-bit index anyway. */
 void vr_camera_angles_from_rotation(const float rot[3][3],
                                      int *out_yaw, int *out_pitch, int *out_roll);
 
