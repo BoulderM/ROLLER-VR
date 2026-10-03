@@ -291,7 +291,7 @@ int main(void)
         }
     }
 
-    if (g_failures == 0) { printf("ALL PASS\n"); return 0; }
+    if (g_failures == 0) { printf("vr_camera_compose_test: ALL PASS\n"); return 0; }
     printf("%d CHECK(S) FAILED\n", g_failures);
     return 1;
 }

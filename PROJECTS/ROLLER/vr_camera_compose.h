@@ -10,9 +10,8 @@ extern "C" {
 /* --- Low-level 3x3 matrix helpers --------------------------------------
  * Naive [row][col] array reads throughout (m[r][c]), matching
  * vr_runtime.c's existing quat_to_mat3()/mat3_transpose()/mat3_flip_row2()
- * convention exactly -- this is the ONE shared copy of this math; Task 3
- * deletes vr_runtime.c's own duplicate copies and includes this header
- * instead. */
+ * convention exactly. This header holds the single shared copy of this math,
+ * so vr_runtime.c uses it rather than keeping its own duplicates. */
 void vr_quat_to_mat3(float x, float y, float z, float w, float m[3][3]);
 void vr_mat3_transpose(const float src[3][3], float dst[3][3]);
 void vr_mat3_mul(const float a[3][3], const float b[3][3], float out[3][3]);
@@ -42,9 +41,9 @@ void vr_mat3_flip_row2(const float src[3][3], float dst[3][3]);
  * +Z-forward convention is H_game = S*H*S (a similarity transform under the
  * axis flip -- S is its own inverse). The composed cockpit-plus-head
  * local-to-world rotation is out_rot = V * H_game = V*S*H*S. This is the
- * SAME relationship the engine's now-retired build_mvp_vr_eye() used for
- * its own combined_rot, back when it composed the live head pose itself
- * (its own derivation comment proved combined_rot = Hᵗ*S*Vᵗ = (V*S*H)ᵗ);
+ * SAME relationship the projection path's combined_rot uses, but this
+ * function composes the live head pose itself
+ * (the projection path derives combined_rot = Hᵗ*S*Vᵗ = (V*S*H)ᵗ);
  * the two are related by out_rot = (combined_rot)ᵗ * S, confirmed algebraically by
  * substitution (S*outᵗ = S*Sᵗ*Hᵗ*Vᵗ*Sᵗ = Hᵗ*S*Vᵗ = combined_rot, using
  * S=Sᵗ and S*S=I). This cross-check is exercised in
@@ -77,7 +76,7 @@ void vr_camera_angles_from_rotation(const float rot[3][3],
  * fully eye-composed camera into the rotation/position its asymmetric-FOV
  * projection needs. base_rot/base_pos are in the SAME [row][col]/
  * vk1..vk9+viewx,y,z convention as vr_camera_compose()'s base_rot/out_rot
- * above -- by the time build_mvp_vr_eye_projection() runs, Task 2's
+ * above -- by the time build_mvp_vr_eye_projection() runs,
  * vr_camera_compose_apply() has already composed this eye's live head pose
  * into those globals, and base_rot/base_pos here are just that frame's
  * snapshot of them (read from base_proj->view/base_cam->viewX,Y,Z).

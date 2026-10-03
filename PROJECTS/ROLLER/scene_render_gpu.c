@@ -859,7 +859,7 @@ static void build_mvp(float mvp[16],
 void scene_render_gpu_build_vp(SceneRendererGPU *r, float vp[16])
 {
     if (r->vrEyeMvpOverrideSet) {
-        /* Persist-until-cleared, NOT one-shot (task-7-review Finding 2):
+        /* Persist-until-cleared, NOT one-shot:
          * game_render_hw_draw_car() bakes this function's result into each
          * car's draw command AT QUEUE TIME (during draw_road()), while
          * world geometry only reads it back at END-FRAME time (Pass A, see
@@ -871,7 +871,7 @@ void scene_render_gpu_build_vp(SceneRendererGPU *r, float vp[16])
          * eye's own draw_road() call, naturally replacing whatever the
          * previous eye set -- and scene_render_gpu_end_frame_to_vr_eye()
          * clears it (scene_render_gpu_clear_vr_eye_mvp()) right after that
-         * eye's render is fully done (task-7-round2 New Important 2), so it
+         * eye's render is fully done, so it
          * can never survive to contaminate the mirror/cinema/secondary-view
          * passes or any other screen sharing this renderer after the VR
          * frame is over -- there's no cross-eye/cross-frame/cross-consumer
@@ -3676,7 +3676,7 @@ static bool scene_render_gpu_end_frame_internal(SceneRendererGPU *r,
     } else if (pFence) {
         /* Windowless non-readback (VR eye render): hand the fence to the
          * caller instead of waiting/releasing it here -- vr_present_stereo_frame
-         * (Task 7) waits on it right before the vkCmdCopyImage that needs
+         * waits on it right before the vkCmdCopyImage that needs
          * this render's output, then releases it via the getter below. */
         r->lastVrFence = pFence;
     }
@@ -3764,7 +3764,7 @@ SDL_GPUTexture *scene_render_gpu_end_frame_to_vr_eye(SceneRendererGPU *r,
     if (!r || r->window) return NULL; /* VR eyes are windowless renderers only */
     r->viewportW = (int)uiWidth;
     r->viewportH = (int)uiHeight;
-    /* task-7-review Finding 3: scene_render_gpu_end_frame_internal() renders
+    /* scene_render_gpu_end_frame_internal() renders
      * at viewportW/H * renderScale, not viewportW/H directly -- renderScale
      * defaults to 1.0 but is user-configurable (RenderScale= in the INI,
      * rollerinput.c) and can be set to anything >= 0.25. vr_runtime.c's
@@ -3783,7 +3783,7 @@ SDL_GPUTexture *scene_render_gpu_end_frame_to_vr_eye(SceneRendererGPU *r,
      * always above the 0.25f floor. */
     scene_render_gpu_set_render_scale(r, 1.0f);
     bool ended_ok = scene_render_gpu_end_frame(r);
-    /* task-7-round2 New Important 2: this eye's render (cars queued during
+    /* This eye's render (cars queued during
      * draw_road(), world geometry consumed in Pass A inside end_frame()
      * above) is the last consumer of whatever VR-eye MVP override
      * vr_present_stereo_frame() set for it -- clear it here, now that this
@@ -4933,11 +4933,10 @@ static void surface_uv_log(const char *type, int texId, int surfIdx, int surface
 static bool scene_render_gpu_quad_frustum_culled(const SceneRendererGPU *r,
                                                   const SceneRenderVertex verts[4])
 {
-    /* M2: this cull's symmetric-FOV/640x400-fallback NDC margin test doesn't
-     * match a VR eye's real asymmetric FOV/resolution (see Task 3) even
-     * though the camera orientation itself is now correct (Task 2) -- skip
-     * it in VR and rely on GPU hardware clipping, which this function's own
-     * doc comment already confirms is a correct (if slower) fallback. */
+    /* This cull's symmetric-FOV/640x400-fallback NDC margin test doesn't
+     * match a VR eye's real asymmetric FOV/resolution, so skip it in VR and
+     * rely on GPU hardware clipping, which this function's own doc comment
+     * already confirms is a correct (if slower) fallback. */
     if (g_bVRMode) return false;
 
     float fwd_x = r->proj.view[0][2], fwd_y = r->proj.view[1][2], fwd_z = r->proj.view[2][2];

@@ -694,7 +694,7 @@ LABEL_9:
     worldelev = velevation;
     worldtilt = vtilt;
   }
-vr_compose_exit:
+vr_compose_exit: ;
 #if defined(ROLLER_VR_BUILD)
   {
     float rot[3][3] = { {vk1, vk2, vk3}, {vk4, vk5, vk6}, {vk7, vk8, vk9} };

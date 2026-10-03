@@ -1,11 +1,10 @@
 /* PROJECTS/ROLLER/vr_runtime.c
  *
- * VR Phase 2: opens the OpenXR session against SDL_GPU's Vulkan device
- * (unchanged from Phase 1) and drives the real game loop in stereo. vr_init()
- * is Phase 1's main()'s setup portion (steps 1-8: device, instance, system,
- * session, swapchains, reference space, command pool). Phase 1's own
- * 120-frame clear-color loop and shutdown are replaced by vr_run_frame()/
- * vr_present_stereo_frame() (this task's sibling tasks) and vr_shutdown().
+ * Opens the OpenXR session against SDL_GPU's Vulkan device and drives the
+ * real game loop in stereo. vr_init() sets up the device, instance, system,
+ * session, swapchains, reference space and command pool. Each frame is
+ * handled by vr_run_frame() and vr_present_stereo_frame(), and vr_shutdown()
+ * tears the session down.
  */
 #include "vr_runtime.h"
 #include "vr_view_merge.h"
@@ -73,7 +72,7 @@ _Static_assert((int)XR_SESSION_STATE_IDLE == (int)VR_STATE_IDLE &&
                (int)XR_SESSION_STATE_LOSS_PENDING == (int)VR_STATE_LOSS_PENDING &&
                (int)XR_SESSION_STATE_EXITING == (int)VR_STATE_EXITING,
                "VrSessionState must match XrSessionState");
-/* task-7-round2 New Important 1: true from the moment vr_run_frame()'s own
+/* True from the moment vr_run_frame()'s own
  * xrBeginFrame() succeeds until its own xrEndFrame() call (success or
  * failure) or vr_shutdown()'s frame-close-out below runs. Lets vr_shutdown()
  * tell apart the two shutdown paths that reach it (see vr_shutdown()'s own
@@ -83,11 +82,10 @@ _Static_assert((int)XR_SESSION_STATE_IDLE == (int)VR_STATE_IDLE &&
  * saw XR_SESSION_STATE_STOPPING and returned (runtime-initiated shutdown,
  * no frame outstanding). */
 static bool s_frame_open = false;
-/* Moved up from its original spot in the "Per-frame execution" section below
- * (task-7-round2) so vr_shutdown() -- defined above that section -- can read
- * s_frame_state.predictedDisplayTime when closing out a still-open frame on
- * the game-initiated quit path (see vr_shutdown()'s own comment). Still set
- * fresh by vr_run_frame() every tick via xrWaitFrame(), same as before. */
+/* Declared here, above the per-frame section, so vr_shutdown() (defined before
+ * that section) can read s_frame_state.predictedDisplayTime when closing out a
+ * still-open frame on the game-initiated quit path (see vr_shutdown()'s own
+ * comment). Still set fresh by vr_run_frame() every tick via xrWaitFrame(). */
 static XrFrameState s_frame_state;
 
 /* These write through vr_log_line() (not raw fprintf(stderr, ...)) because
@@ -120,7 +118,7 @@ static bool fail_vk(const char *what, VkResult result)
     return false;
 }
 
-/* --- Vulkan interop negotiation (Phase 3 M1) ---------------------------- */
+/* --- Vulkan interop negotiation ----------------------------------------- */
 
 /* Converts an XrVersion to a Vulkan API version, clamping the fields so an
  * "unbounded" runtime maximum (0xffff minor, 0xffffffff patch) cannot overflow
@@ -313,20 +311,14 @@ bool vr_init(void)
     }
 
     /* --- 1. Adopt the game's existing SDL_GPU device (Vulkan) --- */
-    /* task-7-review Finding 1 (Critical): this used to call its own
-     * SDL_CreateGPUDevice() here, creating a SECOND, independent VkDevice
-     * from the one InitSDL()'s VR branch (roller.c) already created for the
-     * game itself (s_pGPUDevice / ROLLERGetGPUDevice()). OpenXR was then
-     * bound to THIS runtime's own device while vr_present_stereo_frame()
-     * went on to wait fences and copy VkImages that actually belonged to
-     * the GAME's device (via game_render_end_frame_to_vr_eye()) using a
-     * queue/command buffer from a DIFFERENT device -- invalid Vulkan usage
-     * (a VkImage/fence from one VkDevice cannot be used in commands
-     * submitted to a different VkDevice's queue). Fixed by adopting the
-     * game's own device instead of creating a second one: OpenXR now binds
-     * to the exact same VkDevice/VkQueue the game renders with, and every
-     * downstream Vulkan call in this file operates on that one shared
-     * device throughout.
+    /* Adopt the game's device (s_pGPUDevice / ROLLERGetGPUDevice()) rather
+     * than calling SDL_CreateGPUDevice() here. A second VkDevice would be
+     * invalid: vr_present_stereo_frame() waits fences and copies VkImages
+     * that belong to the game's device (via game_render_end_frame_to_vr_eye()),
+     * and a VkImage or fence from one VkDevice cannot be used in commands
+     * submitted to a different VkDevice's queue. OpenXR therefore binds to the
+     * exact same VkDevice/VkQueue the game renders with, and every downstream
+     * Vulkan call in this file operates on that one shared device.
      *
      * ROLLERGetGPUDevice() is guaranteed non-NULL here because vr_init() is
      * only ever called from main() (3d.c), immediately after InitSDL()
@@ -582,7 +574,7 @@ bool vr_init(void)
 }
 
 
-/* --- Session lifecycle (Phase 3 M1) -------------------------------------- */
+/* --- Session lifecycle -------------------------------------------------- */
 
 #define VR_EXIT_DRAIN_TIMEOUT_MS 2000
 
@@ -644,7 +636,7 @@ static bool vr_poll_events(void)
             if (actions & VR_ACTION_REQUEST_QUIT)
                 quit = true;
         } else if (event.type == XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING) {
-            /* Per the M1 spec, instance loss takes the same non-zero-exit path as a
+            /* Instance loss takes the same non-zero-exit path as a
              * failed OpenXR call (vr_frame_call_failed), not the zero-exit path a
              * clean runtime-initiated session end (STOPPING/EXITING/LOSS_PENDING,
              * handled above) takes -- the instance itself is gone, which is a
@@ -769,7 +761,7 @@ int vr_exit_status(void)
     return s_exit_status;
 }
 
-/* --- Live head tracking + per-eye MVP construction (Phase 2) ------------ */
+/* --- Live head tracking + per-eye MVP construction ---------------------- */
 
 /* Last successfully merged views (each component is its most recent valid
  * value, or the identity/zero fallback if it never was valid). */
@@ -902,49 +894,35 @@ float vr_resolve_meters_to_world(void)
 }
 
 /* Builds the projection-only half of a VR eye's MVP: the asymmetric FOV
- * OpenXR reports for this eye, combined with the camera's ALREADY fully
- * composed (Task 2) rotation and world position -- no XrView/pose/
+ * OpenXR reports for this eye, combined with the camera's already fully
+ * composed rotation and world position -- no XrView/pose/
  * quaternion of any kind appears below, only the FOV.
  *
- * Retired from this function's predecessor, build_mvp_vr_eye(): that
- * function's own head-pose rotation/position composition (head_rot,
- * head_rot_T, combined_rot = head_rot_T * S * R_true, head_pos_world). It
- * existed because, at the time, base_proj->view/base_cam->viewX,Y,Z still
- * held the FLAT non-VR camera -- this function had to compose the eye's
- * live OpenXR pose on top of it itself. Task 2 moved that composition into
- * calculateview()'s own post-step (view.c, via vr_camera_compose_apply()),
+ * The live head pose is composed exactly once, upstream: calculateview()'s
+ * post-step (view.c, via vr_camera_compose_apply()) folds it into the camera,
  * so by the time vr_present_stereo_frame() calls this function, base_cam/
- * base_proj already carry the FULL per-eye camera (rotation AND position).
- * Composing the pose again here -- which is exactly what adapting the old
- * function's body naively would do -- would apply the SAME head pose a
- * SECOND time, the same class of bug Phase 2 shipped and had to fix for
- * IPD ("an earlier version added a further +-31.5mm... which counted the
- * IPD twice", preserved below in case (c)'s history; see
- * tests/vr_camera_compose_test.c). Retiring the composition (not the
- * asymmetric-projection mechanism -- build_mvp()'s own symmetric-FOV
- * construction, scene_render_gpu.c, still can't express an HMD's
- * asymmetric per-eye lens offset) is this function's entire job. */
+ * base_proj already carry the full per-eye camera (rotation AND position).
+ * Composing the pose again here would apply the same head pose a second time
+ * and double-count the IPD (see tests/vr_camera_compose_test.c, case (c2)).
+ * What remains for this function is the asymmetric projection: build_mvp()'s
+ * symmetric-FOV construction in scene_render_gpu.c cannot express an HMD's
+ * asymmetric per-eye lens offset. */
 void build_mvp_vr_eye_projection(float mvp_out[16],
                                   const SceneRenderCamera *base_cam,
                                   const SceneRenderProjection *base_proj,
                                   const XrFovf *fov)
 {
-    /* vr_camera_view_basis() (vr_camera_compose.h, Task 1's genuinely
-     * shared module -- this is the SAME function tests/vr_camera_compose_
-     * test.c's case (c2) calls directly) does the transpose + S-row-flip
-     * that turns base_proj->view (the FULL per-eye composed rotation
-     * already, per Task 2 -- not the flat non-VR rotation the retired
-     * build_mvp_vr_eye() started from) into combined_rot, the world-to-eye
-     * rotation the kept asymmetric projection below (mvp[11] = -1, i.e.
-     * w = -z_eye) expects, and passes base_cam->viewX/Y/Z through as
-     * eye_pos UNCHANGED (base_cam->viewX/Y/Z is already this eye's fully
-     * composed world position -- vr_camera_compose_apply() wrote it into
-     * viewx/viewy/viewz, which this frame's base_cam snapshot was read
-     * from in vr_present_stereo_frame()). vr_camera_view_basis() takes no
-     * pose/quaternion input at all, so nothing here can double-count the
-     * eye's head pose the way the retired build_mvp_vr_eye() would have if
-     * adapted naively (it had to left-multiply by head_rot_T to fold the
-     * live pose into its own, still-flat, R_true). */
+    /* vr_camera_view_basis() (vr_camera_compose.h, the module shared with
+     * tests/vr_camera_compose_test.c's case (c2)) does the transpose +
+     * S-row-flip that turns base_proj->view (the full per-eye composed
+     * rotation) into combined_rot, the world-to-eye rotation the asymmetric
+     * projection below (mvp[11] = -1, i.e. w = -z_eye) expects, and passes
+     * base_cam->viewX/Y/Z through as eye_pos UNCHANGED (base_cam->viewX/Y/Z
+     * is already this eye's fully composed world position --
+     * vr_camera_compose_apply() wrote it into viewx/viewy/viewz, which this
+     * frame's base_cam snapshot was read from in vr_present_stereo_frame()).
+     * vr_camera_view_basis() takes no pose/quaternion input at all, so
+     * nothing here can double-count the eye's head pose. */
     float combined_rot[3][3];
     float eye_pos[3];
     float base_pos[3] = { base_cam->viewX, base_cam->viewY, base_cam->viewZ };
@@ -954,8 +932,7 @@ void build_mvp_vr_eye_projection(float mvp_out[16],
     /* Asymmetric perspective from the OpenXR-reported per-eye FOV -- the
      * one place VR genuinely needs a different projection construction
      * than build_mvp()'s symmetric FOV, since HMD lenses are rarely
-     * centered. Unchanged from the retired build_mvp_vr_eye(): this block
-     * never depended on xr_view->pose, only xr_view->fov (now just `fov`). */
+     * centered. This block depends only on the FOV, never on the pose. */
     float tan_left = tanf(fov->angleLeft);
     float tan_right = tanf(fov->angleRight);
     float tan_up = tanf(fov->angleUp);
@@ -964,7 +941,7 @@ void build_mvp_vr_eye_projection(float mvp_out[16],
     float near_plane = near_plane_m * vr_resolve_meters_to_world();  /* world units. For the
                                  stock car this is ~15.6 (the old 100-units/m placeholder gave
                                  5.0), looser than SCENE_GPU_NEAR's 10.0f non-VR default;
-                                 revisit in Phase 3 comfort tuning on the headset */
+                                 may need tuning for comfort on a real headset */
     float far_plane = 100000.0f;  /* already a world-unit quantity (not meters) -- same
                                  order of magnitude as the game's own track-overview
                                  camera distances, no conversion needed */
@@ -990,9 +967,8 @@ void build_mvp_vr_eye_projection(float mvp_out[16],
 
     /* Fold combined_rot + eye-position translation into a view matrix,
      * then multiply by the projection built above -- the same
-     * translate-by-(-R*eye) convention build_mvp() uses, and the same fold
-     * the retired build_mvp_vr_eye() used, just with combined_rot/
-     * eye_x,y,z no longer carrying any pose composition of their own. */
+     * translate-by-(-R*eye) convention build_mvp() uses. combined_rot and
+     * eye_x,y,z carry no pose composition of their own. */
     float view[16] = {0};
     for (int r = 0; r < 3; r++)
         for (int c = 0; c < 3; c++)
@@ -1010,7 +986,7 @@ void build_mvp_vr_eye_projection(float mvp_out[16],
         }
 }
 
-/* --- Per-frame execution (Task 7: OpenXR bracketing + per-eye present) --- */
+/* --- Per-frame execution (OpenXR bracketing + per-eye present) ---------- */
 
 static XrView       s_frame_views[2];
 static bool         s_should_render_this_tick = false;
@@ -1019,7 +995,7 @@ static bool         s_should_render_this_tick = false;
  * xrBeginFrame() succeeds in vr_run_frame(). This is a CPU wall-clock proxy
  * for the game tick plus both eyes' queueing/submission, NOT a GPU timestamp:
  * a real GPU-side measurement would need Vulkan timestamp queries, which are
- * out of scope for this test-infrastructure task. */
+ * not implemented here. */
 static Uint64       s_cpuFrameStartTicks = 0;
 
 /* Filled in by vr_present_stereo_frame() (one entry per eye actually
@@ -1077,7 +1053,7 @@ bool vr_run_frame(void)
         vr_frame_call_failed("xrBeginFrame", frame_result);
         return true;
     }
-    /* task-7-round2 New Important 1: marks this frame as open for
+    /* Marks this frame as open for
      * vr_shutdown() -- see its own comment and s_frame_open's declaration
      * above. Cleared below once this function's own xrEndFrame() runs (or
      * by vr_shutdown() itself, if main_loop_iteration() below reaches it
@@ -1100,7 +1076,7 @@ bool vr_run_frame(void)
 
     /* main_loop_iteration() runs the real game tick (input, physics,
      * frontend state machine). When it reaches race_draw()->updatescreen(),
-     * updatescreen()'s g_bVRMode branch (a later task) calls
+     * updatescreen()'s g_bVRMode branch calls
      * vr_present_stereo_frame() synchronously, right here in the middle of
      * this function call -- s_frame_views/s_should_render_this_tick above
      * are what it reads, and it fills s_projection_views/
@@ -1110,7 +1086,7 @@ bool vr_run_frame(void)
      * Taken here, before xrEndFrame(), so compositor wait time is excluded. */
     Uint64 cpu_end_ticks = SDL_GetPerformanceCounter();
 
-    /* task-7-round2 New Important 1: main_loop_iteration() above can reach
+    /* main_loop_iteration() above can reach
      * frontend_shutdown_finish() -> vr_shutdown() on this exact tick (the
      * game-initiated quit path -- see vr_shutdown()'s own comment), which
      * destroys and NULLs s_session/s_instance (and already closed out THIS
@@ -1207,7 +1183,7 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
          * comment in vr_runtime.h. That acquires an SDL GPU command buffer
          * that nothing else will ever submit or cancel if we just bail out
          * here, leaking one SDL command buffer on every tick OpenXR reports
-         * shouldRender == false for (task-7-review Finding 4). Cancel it
+         * shouldRender == false. Cancel it
          * explicitly instead of leaving it dangling. */
         game_render_cancel_frame(g_pGameRenderer);
         s_frame_view_count_for_layer = 0;
@@ -1249,20 +1225,17 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
         if (i > 0)
             game_render_begin_frame(g_pGameRenderer);
 
-        /* --- task-7-review Finding 2 (Important) ---
+        /* The VR-eye override must be set BEFORE draw_road(), not after it.
          * game_render_hw_draw_car() bakes scene_render_gpu_build_vp()'s
          * result into each car's draw command AT QUEUE TIME, i.e. during
-         * draw_road()'s own execution -- while world geometry only reads it
+         * draw_road()'s own execution, while world geometry only reads it
          * back at END-FRAME time (Pass A, scene_render_gpu_end_frame_
-         * internal). Setting the VR-eye override AFTER draw_road() returns
-         * (as this used to) meant cars were already queued with the flat,
-         * non-VR camera by the time the override was set -- only world
-         * geometry got the correct eye view. Fixed by computing this eye's
-         * camera and setting the override BEFORE calling draw_road(), so
-         * it's already active before any car gets queued. (This alone isn't
-         * enough -- see scene_render_gpu_build_vp()'s own comment on why the
-         * override also had to become persist-until-replaced instead of
-         * one-shot; both halves of the fix are required together.)
+         * internal). An override set after draw_road() returns would leave
+         * every car queued with the flat, non-VR camera, so only the world
+         * geometry would get the correct eye view. The override also has to
+         * persist until replaced rather than being one-shot; both
+         * requirements hold together (see scene_render_gpu_build_vp()'s own
+         * comment).
          *
          * calculateview()'s args here exactly match what draw_road() itself
          * passes it: draw_road() calls calculateview(uiViewMode, iCarIdx,
@@ -1273,21 +1246,18 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
          * uiViewType, iDriveView, -1, 0), so within THAT call draw_road's
          * own iCarIdx == uiViewType and its own uiViewMode == iDriveView --
          * hence calculateview(iDriveView, uiViewType, 0) here, using this
-         * function's own parameter names. calculateview() only writes to
-         * view-state globals (viewx/viewy/viewz, vk1..vk9, etc.) as a pure
-         * function of Car[] state (verified by reading view.c/transfrm.c:
-         * no Car[] field is ever written, and every global it touches is
-         * fully overwritten -- not accumulated -- from this call's own
-         * inputs each time) -- calling it here and then again, redundantly,
-         * inside draw_road() itself produces the exact same globals both
-         * times and has no other side effect.
+         * function's own parameter names. calculateview() writes only
+         * view-state globals (viewx/viewy/viewz, vk1..vk9, etc.) and has no
+         * other side effect. The cockpit and driver views are a pure function
+         * of the car state, so the two calls produce identical globals in
+         * those views. The tower and interpolated views read the previous
+         * frame's position (view.c), so the eye's camera can differ slightly
+         * between the two calls in those modes.
          *
-         * vr_camera_compose_set_active_eye()/_clear_active_eye() bracket
-         * BOTH this pre-call AND draw_road()'s own internal, redundant
-         * calculateview() call below -- calculateview()'s own post-step
-         * (view.c) composes this eye's head pose into vk1..vk9/viewx,y,z
-         * every time it's invoked while the eye pose is active, so both
-         * calls here end up with the same composed, head-tracked camera. */
+         * vr_camera_compose_set_active_eye()/_clear_active_eye() bracket both
+         * this call and draw_road()'s own internal calculateview(). Each call
+         * composes this eye's head pose into vk1..vk9/viewx,y,z, so both see
+         * the head-tracked camera. */
         vr_camera_compose_set_active_eye(
             s_frame_views[i].pose.orientation.x, s_frame_views[i].pose.orientation.y,
             s_frame_views[i].pose.orientation.z, s_frame_views[i].pose.orientation.w,
@@ -1295,8 +1265,8 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
             s_frame_views[i].pose.position.z,
             vr_resolve_meters_to_world());
         calculateview(iDriveView, uiViewType, 0);
-        /* task-7-round2 Minor: draw_road()'s own internal calculateview()
-         * call (3d.c draw_road()) is immediately followed by
+        /* draw_road()'s own internal calculateview() call (3d.c draw_road())
+         * is immediately followed by
          * noclip_camera_apply()/chase_look_apply() -- debug-only "Free
          * Camera"/noclip overrides that also write the same view-state
          * globals. Calling them here too keeps base_cam/base_proj below
@@ -1317,7 +1287,7 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
          * CACHED copy of those structs and would still hold the PREVIOUS
          * eye's (or previous frame's) values until draw_road() itself runs
          * a few lines from now and refreshes them. By this point they
-         * already carry THIS eye's fully composed (Task 2) camera, thanks
+         * already carry THIS eye's fully composed camera, thanks
          * to the calculateview() call above running while this eye's pose
          * was active. build_mvp_vr_eye_projection() only reads
          * base_cam->viewX/viewY/viewZ and base_proj->view, so only those
@@ -1349,28 +1319,24 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
             /* draw_road() above already queued this eye's cars/world
              * geometry into a command buffer that game_render_end_frame_to_
              * vr_eye() will now never be called to submit -- cancel it
-             * explicitly (task-7-review Finding 4) rather than leaking it.
+             * explicitly rather than leaking it.
              * No swapchain image was acquired yet, so nothing to release. */
             game_render_cancel_frame(g_pGameRenderer);
             return;
         }
         XrSwapchainImageWaitInfo wait_info = { .type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO, .timeout = XR_INFINITE_DURATION };
         if (XR_FAILED(xrWaitSwapchainImage(s_swapchains[i], &wait_info))) {
-            /* Same pending-command-buffer leak as above (task-7-review
-             * Finding 4), plus we still attempt the matching release call
-             * here to keep xrAcquireSwapchainImage/xrWaitSwapchainImage/
-             * xrReleaseSwapchainImage's strict ordering contract intact for
-             * whatever comes next on this swapchain. task-7-round2 Minor:
-             * an earlier version of this comment claimed the release "keeps
-             * the swapchain usable" here, i.e. that it recovers cleanly --
-             * that's not accurate. Per the spec, xrReleaseSwapchainImage is
-             * only valid after a successful xrWaitSwapchainImage; since the
-             * wait above FAILED, no image was actually waited, so this call
-             * is expected to itself fail (XR_ERROR_CALL_ORDER_INVALID) and
-             * do nothing -- it's a best-effort attempt to keep the sequence
-             * from desyncing further, not a real recovery. Logged rather
-             * than assumed, so a genuinely different failure here isn't
-             * silently swallowed. */
+            /* Same pending-command-buffer leak as above. The matching release
+             * call is still attempted to keep xrAcquireSwapchainImage/
+             * xrWaitSwapchainImage/xrReleaseSwapchainImage's strict ordering
+             * contract intact for whatever comes next on this swapchain.
+             * Per the spec, xrReleaseSwapchainImage is only valid after a
+             * successful xrWaitSwapchainImage. Since the wait above failed, no
+             * image was waited on, so this call is expected to fail itself
+             * (XR_ERROR_CALL_ORDER_INVALID) and do nothing. It is a
+             * best-effort attempt to stop the sequence desyncing further, not
+             * a recovery. The result is logged rather than assumed, so a
+             * genuinely different failure here isn't silently swallowed. */
             game_render_cancel_frame(g_pGameRenderer);
             XrSwapchainImageReleaseInfo release_info = { .type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
             XrResult release_result = xrReleaseSwapchainImage(s_swapchains[i], &release_info);
@@ -1405,9 +1371,9 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
          * and closes off that leak path even if that invariant ever changes. */
         SDL_GPUFence *fence = game_render_get_last_vr_fence(g_pGameRenderer);
         if (fence) {
-            /* Fence-wait serialization (Approach A from the design spec) --
-             * simple and correct; semaphore-based overlap is explicitly
-             * deferred to Phase 3 per the spec. */
+            /* Fence-wait serialization: simple and correct. Semaphore-based
+             * overlap between the GPU and the copy is a possible later
+             * optimisation, not done here. */
             SDL_WaitForGPUFences(s_gpu, true, &fence, 1);
             SDL_ReleaseGPUFence(s_gpu, fence);
         }
@@ -1416,8 +1382,7 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
          * command buffer itself before returning, success or failure -- no
          * separate game_render_cancel_frame() call is needed here regardless
          * of what `resolved` comes back as. Only the swapchain image
-         * acquired above still needs releasing on this failure path
-         * (task-7-review Finding 4). */
+         * acquired above still needs releasing on this failure path. */
         if (!resolved) {
             XrSwapchainImageReleaseInfo release_info = { .type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
             xrReleaseSwapchainImage(s_swapchains[i], &release_info);
@@ -1463,7 +1428,7 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1,
         };
         /* Pre-copy layout of the resolved eye texture: NOT VK_IMAGE_LAYOUT_GENERAL
-         * (the plan's original, unverified assumption) -- checked directly against
+         * (an earlier, unverified assumption) -- checked directly against
          * the patched SDL fork's Vulkan backend (/root/sdl-vr-fork/src/gpu/vulkan/
          * SDL_gpu_vulkan.c) rather than left as a guess:
          *
@@ -1484,7 +1449,7 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
          *     overlay, colorInfo.texture = resolveTarget again) -- each SDL_EndGPU-
          *     RenderPass call re-applies the same back-to-default transition, and
          *     neither pass sets colorInfo.cycle (so this is also the confirmation
-         *     Task 1's cycle:false requirement needs -- offscreenTex is genuinely
+         *     the cycle:false requirement needs -- offscreenTex is genuinely
          *     never cycled, only resized via a full SDL_CreateGPUTexture when w/h
          *     changes between eyes, which is fine since we re-query the VkImage
          *     pointer fresh every eye anyway).
@@ -1500,8 +1465,7 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
          * (wrong oldLayout = image content undefined per the Vulkan spec, and a
          * hard validation error under XR_APILAYER_LUNARG_core_validation).
          *
-         * Equally important and NOT present in the plan's original code: this
-         * function must transition the image back to VK_IMAGE_LAYOUT_SHADER_
+         * Equally important: this function must transition the image back to VK_IMAGE_LAYOUT_SHADER_
          * READ_ONLY_OPTIMAL after the copy (see src_back_to_sampler below), because
          * SDL_GPU's own barrier logic (VULKAN_INTERNAL_PrepareTextureSubresourceFor
          * Write, comment: "always do barrier because of layout transitions") does
@@ -1532,9 +1496,8 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
         src_to_transfer_src.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
         dst_to_transfer_dst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         VkImageMemoryBarrier pre_barriers[2] = { src_to_transfer_src, dst_to_transfer_dst };
-        /* TOP_OF_PIPE_BIT as srcStage (no explicit access masks) mirrors Phase 1's
-         * own already-hardware-tested barrier pattern: real synchronization here is
-         * provided externally by the SDL_WaitForGPUFences call above (we already
+        /* TOP_OF_PIPE_BIT as srcStage (no explicit access masks) is deliberate:
+         * real synchronization here is provided externally by the SDL_WaitForGPUFences call above (we already
          * know the GPU has finished writing resolved_vk_image before this command
          * buffer is even recorded), so the barrier only needs to be spec-valid for
          * the LAYOUT transition, not for ordering a real GPU-side dependency. */
@@ -1557,9 +1520,8 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
          * "Having a memory layout compatible with VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_
          * OPTIMAL for color images" and that "The application is responsible for
          * transitioning the swapchain image back to the image layout ... that the
-         * OpenXR runtime requires". (Phase 1/early Phase 2 left it in GENERAL,
-         * which only worked by luck: Monado's release barrier assumes
-         * COLOR_ATTACHMENT_OPTIMAL.) Colour-attachment access masks pair with the
+         * OpenXR runtime requires". GENERAL would only work by luck: Monado's
+         * release barrier assumes COLOR_ATTACHMENT_OPTIMAL. Colour-attachment access masks pair with the
          * COLOR_ATTACHMENT_OUTPUT dst stage below. */
         VkImageMemoryBarrier src_back_to_sampler = src_to_transfer_src;
         src_back_to_sampler.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;

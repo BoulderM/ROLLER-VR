@@ -413,9 +413,9 @@ static void frontend_shutdown_finish(void)
 
   //added by ROLLER
 #if defined(ROLLER_VR_BUILD)
-  /* task-7-review Finding 1: vr_shutdown() must run BEFORE ShutdownSDL(),
-   * not "after frontend_run_game_loop() returns" as originally sketched --
-   * verified that ShutdownSDL() itself is called from right here, inside
+  /* vr_shutdown() must run BEFORE ShutdownSDL(), not after
+   * frontend_run_game_loop() returns. ShutdownSDL() itself is called from
+   * right here, inside
    * frontend_shutdown_finish(), which runs as part of the frontend state
    * machine's SHUTDOWN state while main_loop_iteration()/vr_run_frame() is
    * STILL being called in frontend_run_game_loop()'s loop (main_loop_
@@ -2436,7 +2436,7 @@ void updatescreen()
    * would let VR mode silently fall through one of them on those ticks and
    * do a single-eye, windowless present (no stereo, no OpenXR swapchain
    * submit). VR intentionally has no mirror/split-screen/widescreen-cheat/
-   * cinema presentation (Phase 2 design non-goal), so it bypasses all of them.
+   * cinema presentation, so it bypasses all of them.
    *
    * The main-view geometry below is the plain single-player full-size
    * window, i.e. the same values the paused-under-widescreen branch below
@@ -3239,13 +3239,12 @@ int main(int argc, const char **argv, const char **envp)
   }
 
 #if defined(ROLLER_VR_BUILD)
-  /* task-7-review Finding 1: vr_init()/vr_shutdown() were never called
-   * anywhere -- without this, g_bVRMode would hang forever on vr_run_frame()'s
-   * SDL_Delay(10) wait loop (s_session/s_instance never created). Called
-   * right after InitSDL() succeeds: InitSDL()'s own g_bVRMode branch
-   * (roller.c) is what creates the shared GPU device vr_init() now adopts
-   * (see vr_init()'s own comment in vr_runtime.c), so this is the earliest
-   * point that device is guaranteed to exist. */
+  /* vr_init() must run here: without it, g_bVRMode would hang forever on
+   * vr_run_frame()'s SDL_Delay(10) wait loop (s_session/s_instance never
+   * created). Called right after InitSDL() succeeds: InitSDL()'s own
+   * g_bVRMode branch (roller.c) is what creates the shared GPU device
+   * vr_init() adopts (see vr_init()'s own comment in vr_runtime.c), so this
+   * is the earliest point that device is guaranteed to exist. */
   if (g_bVRMode) {
     if (!vr_init())
       vr_diag_fatal("Couldn't initialize the VR runtime; see roller-vr.log next to the executable.");
@@ -3330,7 +3329,7 @@ int main(int argc, const char **argv, const char **envp)
   InputLoadConfig();
 #if defined(ROLLER_VR_BUILD)
   if (g_bVRMode) {
-    /* M2: force whole-track-within-draw-distance in VR, overriding whatever
+    /* Force whole-track-within-draw-distance in VR, overriding whatever
      * the user's FATAL.INI InfiniteDrawDistance/ForceMaxDraw setting is.
      * CalcVisibleTrack()'s one-contiguous-chunk-run model (drawtrk3.c) has
      * no frustum/extent data to decide "which runs does a 90-degree head

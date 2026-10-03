@@ -834,8 +834,7 @@ int InitSDL(char *whiplash_root, const char *midi_root)
 #if !defined(IS_WASM)
   if (g_bVRMode) {
     /* Windowless like snapshot mode, but (unlike snapshot mode) we need a
-     * real SDL_GPU device — OpenXR binds to it directly, matching the Phase 1
-     * walking-skeleton's own SDL_CreateGPUDevice call exactly. s_pGPUDevice
+     * real SDL_GPU device, and OpenXR binds to it directly. s_pGPUDevice
      * only exists on non-WASM targets (see its declaration above), and VR
      * mode is meaningless in a browser build anyway. */
 #if defined(ROLLER_VR_BUILD)

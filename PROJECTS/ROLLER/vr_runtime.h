@@ -37,12 +37,11 @@ bool vr_locate_views(XrTime predicted_display_time, XrView out_views[2]);
 
 /* World-units-per-meter scale for every meter-scale VR quantity (head position
  * delta, eye separation, near plane). Returns g_fVRMetersToWorldOverride
- * (--vr-meters-to-world) when set, else derives it from the player car's
- * hitbox in CarBox (car.h): car length in world units / a reference real-world
- * car length. Cheap enough to call per eye per frame; the derived value is
- * re-computed only when the measured car length changes (new race, new car
- * design, tiny-cars cheat toggled). Requires Car[]/CarBox to be populated
- * (CalcCarSizes(), car.c) -- true whenever a race is being presented. */
+ * (--vr-meters-to-world) when set, else derives it from Car[0]'s bounding box
+ * in CarBox (car.h): car length in world units / a reference real-world car
+ * length. The derived scale is stable for the session. Cheap enough to call
+ * per eye per frame. Requires Car[]/CarBox to be populated (CalcCarSizes(),
+ * car.c) -- true whenever a race is being presented. */
 float vr_resolve_meters_to_world(void);
 
 /* Builds a full model-view-projection matrix for one eye: base_cam/base_proj
@@ -61,7 +60,7 @@ void build_mvp_vr_eye_projection(float mvp_out[16],
                                   const SceneRenderProjection *base_proj,
                                   const XrFovf *fov);
 
-/* --- Per-frame execution (Phase 2 game-loop integration) ----------------- */
+/* --- Per-frame execution (game-loop integration) ------------------------- */
 
 /* Drives one OpenXR frame: polls events, handles session state transitions
  * (including the initial xrBeginSession once XR_SESSION_STATE_READY), and
@@ -85,8 +84,8 @@ void build_mvp_vr_eye_projection(float mvp_out[16],
 bool vr_run_frame(void);
 
 /* Renders and presents both eyes for the current tick. Called synchronously
- * from inside main_loop_iteration() (via updatescreen()'s g_bVRMode branch,
- * a later task), partway through vr_run_frame() above -- not called
+ * from inside main_loop_iteration() (via updatescreen()'s g_bVRMode branch),
+ * partway through vr_run_frame() above -- not called
  * directly by frontend_run_game_loop(). pMainScrPtr/uiViewType/iDriveView
  * are exactly the arguments the existing non-VR path already passes to
  * draw_road() from updatescreen() (pMainScrPtr, ViewType[0], DriveView[0]);
