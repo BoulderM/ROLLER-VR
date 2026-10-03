@@ -124,6 +124,9 @@ void vr_camera_compose_clear_active_eye(void);
  * caller must then write vk1..vk9/viewx/y/z/worlddirn/worldelev/worldtilt
  * from the results. Returns false (and writes NOTHING to any output) if no
  * eye pose is active. */
+bool vr_camera_compose_apply(float rot[3][3], float pos[3],
+                              int *out_yaw, int *out_pitch, int *out_roll);
+
 /* --- VR eye sky/ground half-plane ---------------------------------------
  * The flat game splits its sky and ground clear colours along a horizon line
  * computed from VIEWDIST and the flat window (game_render_draw_sky()). A VR
@@ -145,9 +148,6 @@ void vr_eye_sky_halfplane(const float base_rot[3][3],
                           float tan_left, float tan_right,
                           float tan_up, float tan_down,
                           float *out_a, float *out_b, float *out_c);
-
-bool vr_camera_compose_apply(float rot[3][3], float pos[3],
-                              int *out_yaw, int *out_pitch, int *out_roll);
 
 #ifdef __cplusplus
 }
