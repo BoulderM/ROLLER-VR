@@ -76,6 +76,9 @@ SDL_Window *ROLLERGetWindow(void);
 extern int g_bVRMode;
 extern int g_iVRMaxFrames;
 extern char g_szVRTrackPath[260];
+extern float g_fVRMetersToWorldOverride; /* --vr-meters-to-world: overrides the car-model-derived
+                                             default entirely when > 0; <= 0 (default -1) means
+                                             "compute from CarBox" */
 
 // Debug overlay accessor
 struct DebugOverlay;

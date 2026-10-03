@@ -45,7 +45,7 @@
  *       just the S/H half that (a)-(c) mostly exercise with R_true == I.
  *   (e) eye separation: two eyes whose poses are the runtime's (+-IPD/2
  *       along head-local X) end up exactly IPD apart in the game's world
- *       (times VR_METERS_TO_WORLD), along the cockpit's own right axis --
+ *       (times TEST_METERS_TO_WORLD), along the cockpit's own right axis --
  *       NOT IPD plus an extra offset (the design plan's original double-
  *       counted IPD, fixed in the final review wave).
  *   (f) vr_merge_view() (the REAL function, from vr_view_merge.h, used by
@@ -177,13 +177,15 @@ static void check_centers_at_distance(const char *label,
 }
 
 /* Mirrors build_mvp_vr_eye()'s eye-position derivation: world-space eye
- * offset from the base camera = V * S * p_xr * VR_METERS_TO_WORLD. */
-#define VR_METERS_TO_WORLD 100.0f
+ * offset from the base camera = V * S * p_xr * TEST_METERS_TO_WORLD. */
+/* Fixed scale for these checks only. The runtime derives its own from the car
+ * model (vr_resolve_meters_to_world()); every check here is scale-relative. */
+#define TEST_METERS_TO_WORLD 100.0f
 static void head_pos_world(const float V[3][3], const float p_xr[3], float out[3])
 {
     float s_p[3] = { p_xr[0], p_xr[1], -p_xr[2] };
     for (int r = 0; r < 3; r++)
-        out[r] = (V[r][0] * s_p[0] + V[r][1] * s_p[1] + V[r][2] * s_p[2]) * VR_METERS_TO_WORLD;
+        out[r] = (V[r][0] * s_p[0] + V[r][1] * s_p[1] + V[r][2] * s_p[2]) * TEST_METERS_TO_WORLD;
 }
 
 static XrView make_view(float px, float py, float pz, float qx, float qy, float qz, float qw,
@@ -380,7 +382,7 @@ int main(void)
     /* (e) Eye separation. Runtime-reported eye poses: identity orientation,
      * positions -/+ 0.0315 m along head-local X (a 63 mm IPD). Cockpit turned
      * 90deg. The two eyes' world positions must differ by exactly IPD (0.063 m
-     * * VR_METERS_TO_WORLD), along the cockpit's right axis (V column 0). */
+     * * TEST_METERS_TO_WORLD), along the cockpit's right axis (V column 0). */
     {
         float V[3][3];
         mat3_rot_y(90.0f * (float)M_PI / 180.0f, V);
@@ -390,7 +392,7 @@ int main(void)
         head_pos_world(V, right_p, right_w);
         float d[3] = { right_w[0] - left_w[0], right_w[1] - left_w[1], right_w[2] - left_w[2] };
         float dist = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-        check_close("(e) eye separation == IPD * VR_METERS_TO_WORLD (no doubling)", dist, 0.063f * VR_METERS_TO_WORLD);
+        check_close("(e) eye separation == IPD * TEST_METERS_TO_WORLD (no doubling)", dist, 0.063f * TEST_METERS_TO_WORLD);
         check_close("(e) separation direction x == cockpit right axis", d[0] / dist, V[0][0]);
         check_close("(e) separation direction y == cockpit right axis", d[1] / dist, V[1][0]);
         check_close("(e) separation direction z == cockpit right axis", d[2] / dist, V[2][0]);

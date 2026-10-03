@@ -33,6 +33,7 @@
 #include "roller.h"  /* ROLLERGetGPUDevice() -- see vr_init() below */
 #include "view.h"    /* calculateview() -- see vr_present_stereo_frame() below */
 #include "frontend.h"  /* quit_game, racing -- --vr-frames bounded-run exit */
+#include "car.h"       /* Car[], CarBox -- vr_resolve_meters_to_world() */
 
 static SDL_GPUDevice *s_gpu;
 static VkInstance s_vk_instance;
@@ -805,22 +806,60 @@ bool vr_locate_views(XrTime predicted_display_time, XrView out_views[2])
     return true;
 }
 
-/* OpenXR reports positions in meters; ROLLER's world units are a much
- * smaller, unlabeled scale (SCENE_GPU_NEAR/FAR in scene_render_gpu.h are
- * 10.0f/20000000.0f world units, and menu_render_gpu.c's track-overview
- * camera sits "hundreds of thousands of world units" from the track --
- * both say world units are far finer-grained than a meter). No numeric
- * world-unit-per-meter constant exists anywhere else in this codebase
- * (checked for CAR_WIDTH/TRACK_WIDTH/scale-factor style constants; the
- * only related quantities, e.g. fTrackHalfWidth, are per-track data, not
- * fixed constants) to anchor a derived value against. This is therefore a
- * PLACEHOLDER -- pick something in the right ballpark (1 world unit = 1cm
- * is a common engine convention) and revisit once there's an actual
- * rendered VR scene to eyeball against a known real-world reference (e.g.
- * seated eye height in the cockpit). Applied to every meter-scale quantity
- * below (head position delta, near plane) before it's combined
- * with world-unit camera state. */
-#define VR_METERS_TO_WORLD 100.0f
+/* OpenXR reports positions in meters; ROLLER's world units are an unlabeled
+ * scale, so every meter-scale quantity (head position delta, eye separation,
+ * near plane) is multiplied by vr_resolve_meters_to_world() before it's
+ * combined with world-unit camera state.
+ *
+ * The scale is derived from the car model rather than a guessed constant:
+ * the car's hitbox length in world units (CalcCarSizes(), car.c, min/max over
+ * each design's own coords) divided by a reference real-world car length.
+ * Orientation-agnostic: the longer of the hitbox's X and Y spans is taken as
+ * the length. In the shipped CarDesigns X is the long axis (~1311 world units
+ * for 13 of 14 designs, ~1621 for f1wack; Y ~745, Z ~412), so X is what gets
+ * picked. --vr-meters-to-world replaces the derived value entirely. */
+#define VR_REFERENCE_CAR_LENGTH_M 4.2f
+
+float vr_resolve_meters_to_world(void)
+{
+    static float s_cached_length_wu = -1.0f; /* car length the cached scale came from */
+    static float s_cached_scale = -1.0f;
+    static bool s_warned_degenerate = false;
+
+    if (g_fVRMetersToWorldOverride > 0.0f)
+        return g_fVRMetersToWorldOverride;
+
+    /* One scale for the whole session, taken from Car[0]'s design. ViewType[0]
+     * (3d.c) is the car the camera follows and can differ from Car[0], but the
+     * designs are close in size, so this only matters for f1wack (index 12). */
+    int carDesignIdx = Car[0].byCarDesignIdx;
+    const tVec3 *pBox = CarBox.hitboxAy[carDesignIdx];
+    /* CalcCarSizes() corner layout: [0]=(xLow,yLow,zLow), [1]=(xHigh,yLow,zLow),
+     * [3]=(xLow,yHigh,zLow). */
+    float xSpan = pBox[1].fX - pBox[0].fX;
+    float ySpan = pBox[3].fY - pBox[0].fY;
+    float lengthWU = (xSpan > ySpan) ? xSpan : ySpan;
+
+    if (!(lengthWU > 0.0f)) { /* also catches NaN */
+        if (!s_warned_degenerate) {
+            s_warned_degenerate = true;
+            vr_log_line("WARN", "vr_resolve_meters_to_world: car design %d hitbox spans are "
+                                "X=%.3f Y=%.3f (expected positive) -- falling back to 100 "
+                                "world units/meter", carDesignIdx, (double)xSpan, (double)ySpan);
+        }
+        return 100.0f;
+    }
+
+    if (lengthWU != s_cached_length_wu) {
+        s_cached_length_wu = lengthWU;
+        s_cached_scale = lengthWU / VR_REFERENCE_CAR_LENGTH_M;
+        vr_log_line("INFO", "vr_resolve_meters_to_world: car design %d hitbox length %.3f world "
+                            "units -> %.4f world units/meter (reference car length %.2fm)",
+                    carDesignIdx, (double)lengthWU, (double)s_cached_scale,
+                    (double)VR_REFERENCE_CAR_LENGTH_M);
+    }
+    return s_cached_scale;
+}
 
 /* Builds the projection-only half of a VR eye's MVP: the asymmetric FOV
  * OpenXR reports for this eye, combined with the camera's ALREADY fully
@@ -882,12 +921,10 @@ void build_mvp_vr_eye_projection(float mvp_out[16],
     float tan_up = tanf(fov->angleUp);
     float tan_down = tanf(fov->angleDown);
     float near_plane_m = 0.05f;  /* 5cm, a typical VR near plane in real-world terms */
-    float near_plane = near_plane_m * VR_METERS_TO_WORLD;  /* world units -- with the
-                                 VR_METERS_TO_WORLD placeholder this comes out to 5.0,
-                                 tighter than SCENE_GPU_NEAR's 10.0f world-unit non-VR
-                                 default, as intended; revisit alongside VR_METERS_TO_WORLD
-                                 in Phase 3 comfort tuning once both can be calibrated
-                                 against an actual rendered scene */
+    float near_plane = near_plane_m * vr_resolve_meters_to_world();  /* world units. For the
+                                 stock car this is ~15.6 (the old 100-units/m placeholder gave
+                                 5.0), looser than SCENE_GPU_NEAR's 10.0f non-VR default;
+                                 revisit in Phase 3 comfort tuning on the headset */
     float far_plane = 100000.0f;  /* already a world-unit quantity (not meters) -- same
                                  order of magnitude as the game's own track-overview
                                  camera distances, no conversion needed */
@@ -1194,7 +1231,7 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
             s_frame_views[i].pose.orientation.z, s_frame_views[i].pose.orientation.w,
             s_frame_views[i].pose.position.x, s_frame_views[i].pose.position.y,
             s_frame_views[i].pose.position.z,
-            VR_METERS_TO_WORLD); /* Task 6 replaces this constant with a computed value */
+            vr_resolve_meters_to_world());
         calculateview(iDriveView, uiViewType, 0);
         /* task-7-round2 Minor: draw_road()'s own internal calculateview()
          * call (3d.c draw_road()) is immediately followed by

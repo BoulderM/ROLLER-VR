@@ -636,6 +636,7 @@ static void print_usage(FILE *f, const char *argv0)
 #if defined(ROLLER_VR_BUILD)
   cli_fprintf(f, " --vr                    boot headless into VR mode (windowless GPU device, direct race start)\n");
   cli_fprintf(f, " --vr-frames N           with --vr: quit cleanly after N stereo frames (default: run until closed)\n");
+  cli_fprintf(f, " --vr-meters-to-world V  with --vr: world units per meter (default: derived from the car model)\n");
 #endif
   cli_fprintf(f, " --track-path PATH       load a track directly from an absolute path\n");
   cli_fprintf(f, " --track-asset-root DIR  resolve direct-track assets from this document root first\n");
@@ -3058,6 +3059,20 @@ int main(int argc, const char **argv, const char **envp)
         consumed = 2;
       } else {
         cli_fprintf(stderr, "ERROR: '--vr-frames' needs an argument\n");
+        return 1;
+      }
+    } else if (strcmp(argv[i], "--vr-meters-to-world") == 0) {
+      if (i + 1 < argc) {
+        char *pEnd = NULL;
+        double dValue = strtod(argv[i + 1], &pEnd);
+        if (!pEnd || *pEnd != '\0' || dValue <= 0.0) {
+          cli_fprintf(stderr, "ERROR: '--vr-meters-to-world' expects a positive number\n");
+          return 1;
+        }
+        g_fVRMetersToWorldOverride = (float)dValue;
+        consumed = 2;
+      } else {
+        cli_fprintf(stderr, "ERROR: '--vr-meters-to-world' needs an argument\n");
         return 1;
       }
 #endif

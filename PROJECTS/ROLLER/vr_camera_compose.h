@@ -30,8 +30,7 @@ void vr_mat3_flip_row2(const float src[3][3], float dst[3][3]);
  * base_pos: {viewx, viewy, viewz} before composition.
  * qx,qy,qz,qw / px,py,pz: one eye's OpenXR pose (xr_view->pose) -- reference-
  *   space axes, position in meters.
- * meters_to_world: world-units-per-meter scale (VR_METERS_TO_WORLD or its
- *   Task-6 replacement).
+ * meters_to_world: world-units-per-meter scale (vr_resolve_meters_to_world()).
  * out_rot/out_pos: the composed local-to-world rotation (same [row][col]
  *   convention as base_rot -- write straight into vk1..vk9) and world
  *   position (write straight into viewx/viewy/viewz). out_rot/out_pos may

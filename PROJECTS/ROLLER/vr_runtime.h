@@ -35,6 +35,16 @@ int vr_exit_status(void);
  * no last-known-good view to fall back to. */
 bool vr_locate_views(XrTime predicted_display_time, XrView out_views[2]);
 
+/* World-units-per-meter scale for every meter-scale VR quantity (head position
+ * delta, eye separation, near plane). Returns g_fVRMetersToWorldOverride
+ * (--vr-meters-to-world) when set, else derives it from the player car's
+ * hitbox in CarBox (car.h): car length in world units / a reference real-world
+ * car length. Cheap enough to call per eye per frame; the derived value is
+ * re-computed only when the measured car length changes (new race, new car
+ * design, tiny-cars cheat toggled). Requires Car[]/CarBox to be populated
+ * (CalcCarSizes(), car.c) -- true whenever a race is being presented. */
+float vr_resolve_meters_to_world(void);
+
 /* Builds a full model-view-projection matrix for one eye: base_cam/base_proj
  * (computed elsewhere by calculateview()/calculatetransform(), called with
  * this eye's pose active via vr_camera_compose_set_active_eye() -- see
