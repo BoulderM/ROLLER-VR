@@ -138,6 +138,11 @@ static bool s_active = false;
 static float s_qx, s_qy, s_qz, s_qw;
 static float s_px, s_py, s_pz;
 static float s_meters_to_world;
+/* The game camera as calculateview() computed it, before this eye's head
+ * pose was composed in (see vr_camera_compose_base_view()). */
+static bool  s_have_base = false;
+static float s_base_pos[3];
+static int   s_base_yaw;
 
 void vr_camera_compose_set_active_eye(float qx, float qy, float qz, float qw,
                                        float px, float py, float pz,
@@ -152,12 +157,27 @@ void vr_camera_compose_set_active_eye(float qx, float qy, float qz, float qw,
 void vr_camera_compose_clear_active_eye(void)
 {
     s_active = false;
+    s_have_base = false;
+}
+
+bool vr_camera_compose_base_view(float out_pos[3], int *out_yaw)
+{
+    if (!s_active || !s_have_base) return false;
+    out_pos[0] = s_base_pos[0]; out_pos[1] = s_base_pos[1]; out_pos[2] = s_base_pos[2];
+    *out_yaw = s_base_yaw;
+    return true;
 }
 
 bool vr_camera_compose_apply(float rot[3][3], float pos[3],
                               int *out_yaw, int *out_pitch, int *out_roll)
 {
     if (!s_active) return false;
+    {
+        int base_pitch, base_roll;
+        s_base_pos[0] = pos[0]; s_base_pos[1] = pos[1]; s_base_pos[2] = pos[2];
+        vr_camera_angles_from_rotation((const float (*)[3])rot, &s_base_yaw, &base_pitch, &base_roll);
+        s_have_base = true;
+    }
     vr_camera_compose(rot, pos, s_qx, s_qy, s_qz, s_qw, s_px, s_py, s_pz,
                        s_meters_to_world, rot, pos);
     vr_camera_angles_from_rotation(rot, out_yaw, out_pitch, out_roll);
@@ -195,4 +215,12 @@ bool vr_eye_view_to_ndc(float vx, float vy, float vz,
     *out_y = (2.0f * Y - (tan_up + tan_down)) / (tan_up - tan_down);
     *out_z = far_plane / (far_plane - near_plane) * (vz - near_plane) / vz;
     return true;
+}
+
+float vr_billboard_yaw_deg(float obj_x, float obj_y, float view_x, float view_y,
+                           float fallback_deg)
+{
+    float dx = obj_x - view_x, dy = obj_y - view_y;
+    if (dx * dx + dy * dy < 1e-6f) return fallback_deg;  /* viewer right above/below it */
+    return atan2f(dy, dx) * (180.0f / 3.14159265358979f);
 }

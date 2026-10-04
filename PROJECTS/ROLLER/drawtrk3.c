@@ -20,6 +20,9 @@
 #include <math.h>
 #include <stdlib.h>
 #include <assert.h>
+#if defined(ROLLER_VR_BUILD)
+#include "vr_camera_compose.h"  /* vr_camera_compose_base_view() */
+#endif
 //-------------------------------------------------------------------------------------------------
 
 int showsub = 0;    //000A34A0
@@ -3630,12 +3633,24 @@ LABEL_393:
           DrawBuilding(iSectionNum, pScrPtr_1);
           goto LABEL_1271;
         case 0xE:
-          draw_start_light_cube_world(g_pGameRenderer,
-                                      &SLight[iChaseCamIdx_1][iSectionNum],
-                                      countdown,
-                                      worlddirn,
-                                      camera,
-                                      projection);
+          {
+            /* The start-light cube turns with the camera heading. In a VR
+             * eye worlddirn is the head's yaw, which would spin the cube as
+             * the head turns; use the game camera's own heading there. */
+            int iLightDirn = worlddirn;
+#if defined(ROLLER_VR_BUILD)
+            float aBasePos[3];
+            int iBaseYaw;
+            if (vr_camera_compose_base_view(aBasePos, &iBaseYaw))
+              iLightDirn = iBaseYaw;
+#endif
+            draw_start_light_cube_world(g_pGameRenderer,
+                                        &SLight[iChaseCamIdx_1][iSectionNum],
+                                        countdown,
+                                        iLightDirn,
+                                        camera,
+                                        projection);
+          }
           goto LABEL_1271;
         default:
           goto LABEL_1271;                      // Switch on render object type to call appropriate renderer

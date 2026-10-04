@@ -9,6 +9,9 @@
 #include <string.h>
 #include <math.h>
 #include <stdlib.h>
+#if defined(ROLLER_VR_BUILD)
+#include "vr_camera_compose.h"  /* vr_camera_compose_base_view(), vr_billboard_yaw_deg() */
+#endif
 //-------------------------------------------------------------------------------------------------
 
 uint8 BuildingSub[24] =                 //000A745C
@@ -52,9 +55,24 @@ bool building_type_is_billboard(unsigned int uiBuildingType)
 //-------------------------------------------------------------------------------------------------
 // The yaw, in degrees, a billboard plan (building_type_is_billboard()) is
 // turned to when drawn: the camera's heading, worlddirn.
+//
+// VR eye: worlddirn is the head's yaw there, so the card would spin in place
+// as the head turns. Turn it to face the game camera's position instead (the
+// uncomposed camera, the same for both eyes and every head pose; see
+// vr_billboard_yaw_deg()), which matches the flat yaw when the camera looks
+// straight at it.
 static float billboard_render_yaw_deg(int iBuildingIdx)
 {
+#if defined(ROLLER_VR_BUILD)
+  float aBasePos[3];
+  int iBaseYaw;
+  if (vr_camera_compose_base_view(aBasePos, &iBaseYaw))
+    return vr_billboard_yaw_deg(BuildingX[iBuildingIdx], BuildingY[iBuildingIdx],
+                                aBasePos[0], aBasePos[1],
+                                (float)(360 * iBaseYaw / 0x3FFF));
+#else
   (void)iBuildingIdx;
+#endif
   return (float)(360 * worlddirn / 0x3FFF);
 }
 

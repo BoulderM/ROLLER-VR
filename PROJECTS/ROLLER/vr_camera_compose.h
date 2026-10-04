@@ -127,6 +127,16 @@ void vr_camera_compose_clear_active_eye(void);
 bool vr_camera_compose_apply(float rot[3][3], float pos[3],
                               int *out_yaw, int *out_pitch, int *out_roll);
 
+/* The game camera of the eye being drawn as calculateview() computed it,
+ * BEFORE the head pose was composed in: its world position and its 14-bit
+ * yaw (vr_camera_angles_from_rotation() of the uncomposed rotation, the flat
+ * game's worlddirn). The same for both eyes and for every head pose. For
+ * world objects the flat game turns with the camera heading (worlddirn),
+ * which in a VR eye is the head's yaw. Returns false, writing nothing,
+ * outside the active-eye bracket or before vr_camera_compose_apply() ran in
+ * it (always in the flat game). */
+bool vr_camera_compose_base_view(float out_pos[3], int *out_yaw);
+
 /* --- VR eye sky/ground half-plane ---------------------------------------
  * The flat game splits its sky and ground clear colours along a horizon line
  * computed from VIEWDIST and the flat window (game_render_draw_sky()). A VR
@@ -173,6 +183,25 @@ bool vr_eye_view_to_ndc(float vx, float vy, float vz,
                         float tan_up, float tan_down,
                         float near_plane, float far_plane,
                         float *out_x, float *out_y, float *out_z);
+
+/* --- VR scenery billboard yaw ------------------------------------------
+ * Trees and advert balloons (building plans 9, 10 and 15) are flat cards in
+ * the plan's Y-Z plane. The flat game turns them to the camera's heading,
+ * yaw = worlddirn, so the card's normal, plan +X turned by the yaw, is
+ * (cos yaw, sin yaw) in world X-Y: the camera's horizontal forward
+ * (calculatetransform(): vk3 = cos dir cos elev, vk6 = sin dir cos elev).
+ * In a VR eye worlddirn is the head's yaw, so every billboard spun in place
+ * as the head turned and stayed face-on to wherever the player looked.
+ *
+ * This gives the yaw, in degrees (the unit building.c's plan transform
+ * takes), that turns the card to face a viewer at (view_x, view_y) instead:
+ * the direction from the viewer to the object, atan2(dy, dx), the same
+ * angle convention as getangle(). It equals the flat game's yaw when the
+ * camera looks straight at the object, and does not depend on where the
+ * head points. fallback_deg is returned when the viewer is straight above or
+ * below the object (no horizontal direction). */
+float vr_billboard_yaw_deg(float obj_x, float obj_y, float view_x, float view_y,
+                           float fallback_deg);
 
 #ifdef __cplusplus
 }
