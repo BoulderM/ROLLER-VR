@@ -1,4 +1,5 @@
 /* PROJECTS/ROLLER/vr_input.c -- see vr_input.h */
+#include "vr_fake_input.h"
 #include "vr_input.h"
 #include "vr_input_map.h"
 #include "vr_input_pad.h"
@@ -9,6 +10,7 @@
 
 #include "3d.h"        /* racing */
 #include "frontend.h"  /* eFrontendCurrentState, quit_game */
+#include "roller.h"    /* g_bVRFakeInput */
 
 static XrInstance s_xr_instance = XR_NULL_HANDLE;
 static XrSession s_xr_session = XR_NULL_HANDLE;
@@ -21,6 +23,10 @@ static VrInputMapState s_map;
 static Uint64 s_last_ms = 0;
 static VrPadState s_logged_pad;
 static bool s_have_logged_pad = false;
+/* --vr-fake-input: the script and its clock. The clock advances only on frames
+ * the session is focused, so a stretch without focus does not skip presses. */
+static VrFakeInput s_fake;
+static uint64_t s_fake_ms = 0;
 
 #define VR_MAX_BINDINGS_PER_PROFILE 32
 
@@ -49,6 +55,8 @@ bool vr_input_xr_init(XrInstance instance, XrSession session, bool valve_frame_e
     s_xr_instance = instance;
     s_xr_session = session;
     vr_input_map_init(&s_map);
+    vr_fake_input_init(&s_fake);
+    s_fake_ms = 0;
 
     XrActionSetCreateInfo set_info = { .type = XR_TYPE_ACTION_SET_CREATE_INFO, .priority = 0 };
     strncpy(set_info.actionSetName, "roller", XR_MAX_ACTION_SET_NAME_SIZE - 1);
@@ -223,6 +231,16 @@ static void vr_input_log_pad(const VrPadState *pad)
     s_have_logged_pad = true;
 }
 
+static VrFakeScreen vr_fake_screen(void)
+{
+    switch (eFrontendCurrentState) {
+    case eFRONTEND_STATE_MAIN_MENU:  return VR_FAKE_SCREEN_MAIN_MENU;
+    case eFRONTEND_STATE_CAR_SELECT: return VR_FAKE_SCREEN_CAR_SELECT;
+    case eFRONTEND_STATE_RACING:     return VR_FAKE_SCREEN_RACING;
+    default:                         return VR_FAKE_SCREEN_OTHER;
+    }
+}
+
 void vr_input_frame(bool session_focused)
 {
     if (!vr_input_pad_attached())
@@ -238,10 +256,25 @@ void vr_input_frame(bool session_focused)
     VrInputActions in;
     SDL_zero(in);
     bool has_back = s_has_back;
-    /* (Task 6 inserts the --vr-fake-input branch here.) */
-    /* A failed or not-focused read counts as not focused: the pad goes to rest and
-     * no stale or half-read state can complete a gesture. */
-    bool read_ok = s_attached && session_focused && vr_input_xr_read(&in);
+    bool read_ok;
+    if (g_bVRFakeInput) {
+        /* Scripted input stands in for the controllers. The script runs only while the
+         * session is focused, so the quit-forwarded path (vr_input_frame(false)) and any
+         * unfocused frame send the pad to rest and cannot keep pressing. It does not use
+         * the OpenXR action set, so it also works when vr_input_xr_init() failed. */
+        read_ok = session_focused;
+        if (read_ok) {
+            s_fake_ms += dt;
+            const char *step = vr_fake_input_step(&s_fake, vr_fake_screen(), s_fake_ms, &in);
+            if (step)
+                vr_log_line("INFO", "VR fake input: step %s (frontend state %d)", step, (int)eFrontendCurrentState);
+            has_back = true; /* exercises the Back+Start gesture; Monado has no controllers */
+        }
+    } else {
+        /* A failed or not-focused read counts as not focused: the pad goes to rest and
+         * no stale or half-read state can complete a gesture. */
+        read_ok = s_attached && session_focused && vr_input_xr_read(&in);
+    }
 
     VrPadState pad;
     VrInputEvent ev = vr_input_map_step(&s_map, &in, read_ok, has_back, dt, &pad);

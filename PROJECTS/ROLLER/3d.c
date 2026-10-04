@@ -643,6 +643,7 @@ static void print_usage(FILE *f, const char *argv0)
   cli_fprintf(f, " --vr-fake-head          with --vr: scripted head-pose sweep instead of the headset pose (testing)\n");
   cli_fprintf(f, " --vr-menu               with --vr: boot to the main menu instead of the intro replay; a small\n"
                  "                         desktop window takes keyboard focus (menus stay black in the headset)\n");
+  cli_fprintf(f, " --vr-fake-input         with --vr-menu: scripted VR controller input (menus, a short race, safety exit; testing)\n");
   cli_fprintf(f, " --vr-eye-dump-dir DIR   with --vr: write each eye's rendered frame to DIR as PNG every 90 frames\n");
   cli_fprintf(f, " --vr-eye-dump-every N   with --vr-eye-dump-dir: dump every N presented frames instead of 90\n");
   cli_fprintf(f, " --vr-eye-dump-from F    with --vr-eye-dump-dir: no dumps before presented frame F\n");
@@ -3091,6 +3092,9 @@ int main(int argc, const char **argv, const char **envp)
     } else if (strcmp(argv[i], "--vr-menu") == 0) {
       g_bVRMenuMode = 1; /* the --vr default since M3; kept so existing command lines work */
       consumed = 1;
+    } else if (strcmp(argv[i], "--vr-fake-input") == 0) {
+      g_bVRFakeInput = 1;
+      consumed = 1;
     } else if (strcmp(argv[i], "--vr-demo") == 0) {
       /* The pre-M3 plain --vr: the attract-mode demo race, no menu and no input. */
       g_bVRMode = 1;
@@ -3224,6 +3228,11 @@ int main(int argc, const char **argv, const char **envp)
     g_bVRDemoMode = 1;
   if (g_bVRMode && !g_bVRDemoMode)
     g_bVRMenuMode = 1;
+  /* After the menu default above, so that a plain '--vr --vr-fake-input' is accepted. */
+  if (g_bVRFakeInput && !g_bVRMenuMode) {
+    cli_fprintf(stderr, "ERROR: '--vr-fake-input' requires '--vr-menu' (or '--vr' without '--vr-demo')\n");
+    return 1;
+  }
 #endif
   if (szGpuParityBackend) {
     if (g_bSnapshotMode || g_szDirectTrackPath || g_bVRMode) {
