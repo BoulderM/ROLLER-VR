@@ -6,16 +6,14 @@
  * joystick and gamepad subsystems, which keeps SDL's joystick driver up across
  * InputSetWindowsBackend()'s SDL_QuitSubSystem() calls.
  *
- * Joystick backend: SDL reads SDL_HINT_JOYSTICK_DIRECTINPUT once, when its joystick
- * driver initialises (SDL_dinputjoystick.c; only the Windows driver reads it, so the
- * hint is a no-op elsewhere). vr_input_pad_attach() therefore takes the backend and
- * sets the hint before it initialises the joystick subsystem. This guarantees:
- *  - the backend is fixed by the attach call: the pad's reference keeps SDL's driver
- *    alive, so a later InputSetWindowsBackend() does not change which joystick driver
- *    SDL uses until vr_input_pad_detach();
- *  - if the joystick subsystem was already initialised by someone else, the hint only
- *    takes effect at that earlier initialisation;
- *  - a call while attached returns true and ignores use_directinput.
+ * Joystick backend: SDL reads SDL_HINT_JOYSTICK_DIRECTINPUT when its joystick driver
+ * initialises (SDL_dinputjoystick.c) and again when its haptic driver initialises
+ * (SDL_dinputhaptic.c). Both readers are Windows-only, so the hint is a no-op elsewhere.
+ * vr_input_pad_attach() takes the backend and sets the hint immediately before its
+ * joystick init, so it decides the backend only if no earlier code has initialised
+ * SDL's joystick subsystem. While attached, a later InputSetWindowsBackend() does not
+ * change the joystick driver until vr_input_pad_detach(). A call while attached returns
+ * true and ignores use_directinput.
  *
  * Lifetime precondition: vr_input_pad_detach() must run before SDL_Quit(). The
  * statics behind this API hold SDL handles, and detach calls SDL_CloseJoystick and

@@ -84,7 +84,7 @@ SDL_JoystickID vr_input_pad_id(void) { return s_pad ? s_pad_id : 0; }
 
 void vr_input_pad_write(const VrPadState *state)
 {
-    /* Failures are logged once per site: this runs every frame. */
+    /* Failures are logged once per process per site: this runs every frame. */
     static bool s_axis_failure_logged = false;
     static bool s_button_failure_logged = false;
     if (!s_pad || !state)

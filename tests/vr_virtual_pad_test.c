@@ -14,8 +14,8 @@
  *  - the VR pad (vr_input_pad.c) fed by vr_input_map_step() reads back as the
  *    intended SDL gamepad elements, and nothing while the session is not focused;
  *  - vr_input_pad_attach() sets SDL_HINT_JOYSTICK_DIRECTINPUT from its argument.
- *    Only the hint value is checked here; the Windows joystick driver that reads it
- *    is not built on Linux, so its effect is verified on Windows. */
+ *    Only the hint value is checked here. The effect of the hint (the Windows
+ *    joystick driver that reads it) is not exercised here and needs a Windows run. */
 #include <SDL3/SDL.h>
 
 #include <stdbool.h>
@@ -130,7 +130,9 @@ static void check_raw_attach(void)
     CHECK(SDL_DetachVirtualJoystick(id));
 }
 
-/* attach() must put its backend argument into the hint before SDL's joystick init. */
+/* attach() must put its backend argument into the hint. This reads back the hint value
+ * only: main() calls SDL_Init before this check, so it does not test the ordering
+ * relative to SDL's joystick init. */
 static void check_backend_hint(void)
 {
     CHECK(vr_input_pad_attach(false));
@@ -291,8 +293,8 @@ static void check_mapped_chain(void)
     expect_only_button(pad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT);
 
     /* Menu is START and View is BACK, both held back for VR_COMBO_GRACE_MS (250 ms) in
-     * case the partner follows. Holding 100 frames of 10 ms (1 s) lets them through,
-     * and stays under the 2 s safety hold. */
+     * case the partner follows. Holding menu for 100 frames of 10 ms (1 s) is past the
+     * grace: START fires and BACK stays false. View gets the same hold below. */
     vr_input_map_init(&s);
     memset(&a, 0, sizeof(a));
     a.menu = true;
