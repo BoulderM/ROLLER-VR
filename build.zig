@@ -293,6 +293,7 @@ pub fn build(b: *std.Build) void {
                 "PROJECTS/ROLLER/vr_ext_list.c",
                 "PROJECTS/ROLLER/vr_session_fsm.c",
                 "PROJECTS/ROLLER/vr_input_map.c",
+                "PROJECTS/ROLLER/vr_input_pad.c",
             },
         });
 
@@ -365,7 +366,11 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
                 .link_libc = true,
             });
-            vpad_mod.addCSourceFiles(.{ .files = &.{"tests/vr_virtual_pad_test.c"}, .flags = c_flags });
+            vpad_mod.addCSourceFiles(.{ .files = &.{
+                "tests/vr_virtual_pad_test.c",
+                "PROJECTS/ROLLER/vr_input_pad.c",
+                "PROJECTS/ROLLER/vr_input_map.c",
+            }, .flags = c_flags });
             vpad_mod.addIncludePath(b.path("PROJECTS/ROLLER"));
             vpad_mod.addIncludePath(sdl_vr.builder.path("include"));
             vpad_mod.linkLibrary(sdl_vr.artifact("SDL3"));

@@ -10,10 +10,16 @@
  *  - with contiguous masks, raw button i == SDL_GamepadButton i and raw axis
  *    i == SDL_GamepadAxis i (the virtual driver packs indices in mask order);
  *  - stick axes pass raw values through unchanged;
- *  - trigger axes rest at raw -32768 and map the full raw range to 0..32767. */
+ *  - trigger axes rest at raw -32768 and map the full raw range to 0..32767;
+ *  - the VR pad (vr_input_pad.c) fed by vr_input_map_step() reads back as the
+ *    intended SDL gamepad elements, and nothing while the session is not focused. */
 #include <SDL3/SDL.h>
 
+#include <stdbool.h>
 #include <stdio.h>
+#include <string.h>
+
+#include "vr_input_pad.h"
 
 static int g_failures = 0;
 
@@ -121,6 +127,113 @@ static void check_raw_attach(void)
     CHECK(SDL_DetachVirtualJoystick(id));
 }
 
+/* One frame: map the actions, write the pad, let SDL read it back. dt is 10 ms
+ * (never 0: vr_lone_button needs a positive dt to end a tap pulse). */
+static void map_frame(VrInputMapState *s, const VrInputActions *a, bool focused)
+{
+    VrPadState pad;
+    vr_input_map_step(s, a, focused, true, 10, &pad);
+    vr_input_pad_write(&pad);
+    SDL_UpdateJoysticks();
+}
+
+static void expect_only_button(SDL_Gamepad *pad, int idx)
+{
+    for (int b = 0; b < PAD_BUTTONS; ++b) {
+        bool down = SDL_GetGamepadButton(pad, (SDL_GamepadButton)b);
+        if (down != (b == idx)) {
+            printf("FAIL expected only button %d; button %d reads %d\n", idx, b, (int)down);
+            g_failures++;
+        }
+    }
+}
+
+static void expect_no_buttons(SDL_Gamepad *pad)
+{
+    expect_only_button(pad, -1);
+}
+
+static void check_mapped_chain(void)
+{
+    CHECK(vr_input_pad_attach());
+    CHECK(vr_input_pad_attached());
+    SDL_JoystickID id = vr_input_pad_id();
+    CHECK(id != 0);
+    SDL_Gamepad *pad = SDL_OpenGamepad(id);
+    CHECK(pad != NULL);
+    if (!pad) {
+        vr_input_pad_detach();
+        return;
+    }
+
+    VrInputMapState s;
+    VrInputActions a;
+
+    /* Right trigger full: RIGHT_TRIGGER 32767, LEFT_TRIGGER at rest (0). */
+    vr_input_map_init(&s);
+    memset(&a, 0, sizeof(a));
+    a.right_trigger = 1.0f;
+    map_frame(&s, &a, true);
+    CHECK(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) == 32767);
+    CHECK(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) == 0);
+
+    /* Left stick pushed up (OpenXR +y): SDL LEFTY is negative up. */
+    vr_input_map_init(&s);
+    memset(&a, 0, sizeof(a));
+    a.left_stick_y = 1.0f;
+    map_frame(&s, &a, true);
+    CHECK(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY) == -32767);
+    CHECK(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX) == 0);
+
+    /* A is SOUTH and nothing else. */
+    vr_input_map_init(&s);
+    memset(&a, 0, sizeof(a));
+    a.button_a = true;
+    map_frame(&s, &a, true);
+    expect_only_button(pad, SDL_GAMEPAD_BUTTON_SOUTH);
+
+    /* D-pad down is DPAD_DOWN and nothing else. */
+    vr_input_map_init(&s);
+    memset(&a, 0, sizeof(a));
+    a.dpad_down = true;
+    map_frame(&s, &a, true);
+    expect_only_button(pad, SDL_GAMEPAD_BUTTON_DPAD_DOWN);
+
+    /* Left grip squeezed past the press threshold is LEFT_SHOULDER. */
+    vr_input_map_init(&s);
+    memset(&a, 0, sizeof(a));
+    a.left_squeeze = 1.0f;
+    map_frame(&s, &a, true);
+    expect_only_button(pad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
+
+    /* Not focused with everything pressed: every axis 0 and no button. */
+    vr_input_map_init(&s);
+    memset(&a, 0, sizeof(a));
+    a.left_stick_x = a.left_stick_y = a.right_stick_x = a.right_stick_y = 1.0f;
+    a.left_trigger = a.right_trigger = 1.0f;
+    a.left_squeeze = a.right_squeeze = 1.0f;
+    a.button_a = a.button_b = a.button_x = a.button_y = true;
+    a.menu = a.view = true;
+    a.left_shoulder = a.right_shoulder = true;
+    a.left_stick_click = a.right_stick_click = true;
+    a.dpad_up = a.dpad_down = a.dpad_left = a.dpad_right = true;
+    a.select = true;
+    map_frame(&s, &a, false);
+    for (int ax = 0; ax < PAD_AXES; ++ax) {
+        Sint16 v = SDL_GetGamepadAxis(pad, (SDL_GamepadAxis)ax);
+        if (v != 0) {
+            printf("FAIL unfocused axis %d reads %d\n", ax, v);
+            g_failures++;
+        }
+    }
+    expect_no_buttons(pad);
+
+    SDL_CloseGamepad(pad);
+    vr_input_pad_detach();
+    CHECK(!vr_input_pad_attached());
+    CHECK(SDL_WasInit(SDL_INIT_GAMEPAD) != 0); /* main()'s own reference survives */
+}
+
 int main(void)
 {
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
@@ -129,6 +242,7 @@ int main(void)
         return 1;
     }
     check_raw_attach();
+    check_mapped_chain();
     SDL_Quit();
     if (g_failures) {
         printf("FAILED (%d)\n", g_failures);
