@@ -288,6 +288,20 @@ static void test_squeeze_hysteresis(void)
     step(&s, a, true, true, 10, &out);
     expect_only_button(&out, VR_PAD_BUTTON_LEFT_SHOULDER);
 
+    /* Release band: VR_SQUEEZE_RELEASE is 0.4f and the release test is strictly
+     * below it (v < 0.4f), so everything from 0.4 up stays pressed. */
+    a.left_squeeze = 0.45f;
+    step(&s, a, true, true, 10, &out);
+    expect_only_button(&out, VR_PAD_BUTTON_LEFT_SHOULDER);
+
+    a.left_squeeze = 0.41f;
+    step(&s, a, true, true, 10, &out);
+    expect_only_button(&out, VR_PAD_BUTTON_LEFT_SHOULDER);
+
+    a.left_squeeze = 0.4f;
+    step(&s, a, true, true, 10, &out);
+    expect_only_button(&out, VR_PAD_BUTTON_LEFT_SHOULDER);
+
     a.left_squeeze = 0.39f;
     step(&s, a, true, true, 10, &out);
     expect_only_button(&out, -1);
@@ -529,7 +543,7 @@ static void test_lone_tap(void)
         step(&s, none, true, true, 10, &out);
         CHECK(out.buttons[VR_PAD_BUTTON_START]);
     }
-    for (int i = 0; i < 5; ++i) { /* gone from 60 ms on */
+    for (int i = 0; i < 5; ++i) { /* gone from 50 ms on */
         step(&s, none, true, true, 10, &out);
         CHECK(!out.buttons[VR_PAD_BUTTON_START]);
     }
@@ -713,6 +727,32 @@ static void test_valve_profile(void)
             continue;
         CHECK(bound[a]);
     }
+
+    /* Each (action, component) pair is written out here, not read back from the
+     * table. Components are the SteamFrameControllerProfile.cs list (the k_valve_*
+     * arrays above); the action on each is the one its name says. */
+    /* Left hand. */
+    CHECK(has_binding(v, VR_ACT_LEFT_STICK, TL_IN "thumbstick"));
+    CHECK(has_binding(v, VR_ACT_LEFT_TRIGGER, TL_IN "trigger/value"));
+    CHECK(has_binding(v, VR_ACT_LEFT_SQUEEZE, TL_IN "squeeze/value"));
+    CHECK(has_binding(v, VR_ACT_LEFT_SHOULDER, TL_IN "shoulder/click"));
+    CHECK(has_binding(v, VR_ACT_LEFT_STICK_CLICK, TL_IN "thumbstick/click"));
+    CHECK(has_binding(v, VR_ACT_VIEW, TL_IN "view/click"));
+    CHECK(has_binding(v, VR_ACT_DPAD_UP, TL_IN "dpad_up/click"));
+    CHECK(has_binding(v, VR_ACT_DPAD_DOWN, TL_IN "dpad_down/click"));
+    CHECK(has_binding(v, VR_ACT_DPAD_LEFT, TL_IN "dpad_left/click"));
+    CHECK(has_binding(v, VR_ACT_DPAD_RIGHT, TL_IN "dpad_right/click"));
+    /* Right hand. */
+    CHECK(has_binding(v, VR_ACT_RIGHT_STICK, TR_IN "thumbstick"));
+    CHECK(has_binding(v, VR_ACT_RIGHT_TRIGGER, TR_IN "trigger/value"));
+    CHECK(has_binding(v, VR_ACT_RIGHT_SQUEEZE, TR_IN "squeeze/value"));
+    CHECK(has_binding(v, VR_ACT_RIGHT_SHOULDER, TR_IN "shoulder/click"));
+    CHECK(has_binding(v, VR_ACT_RIGHT_STICK_CLICK, TR_IN "thumbstick/click"));
+    CHECK(has_binding(v, VR_ACT_A, TR_IN "a/click"));
+    CHECK(has_binding(v, VR_ACT_B, TR_IN "b/click"));
+    CHECK(has_binding(v, VR_ACT_X, TR_IN "x/click"));
+    CHECK(has_binding(v, VR_ACT_Y, TR_IN "y/click"));
+    CHECK(has_binding(v, VR_ACT_MENU, TR_IN "menu/click"));
 }
 
 static void test_touch_profile(void)
@@ -790,6 +830,74 @@ static void test_actions_set(void)
     vr_input_actions_set(NULL, VR_ACT_A, 1.0f, 1.0f);
 }
 
+/* Steps one frame with only `a` set and checks that exactly button `idx` is pressed. */
+static void expect_pressed(VrInputMapState *s, VrInputActions a, bool has_back, int idx)
+{
+    VrPadState out;
+    step(s, a, true, has_back, 10, &out);
+    expect_only_button(&out, idx);
+}
+
+/* Pad indices as literal integers, so swapping two enum values in vr_input_map.h
+ * fails here as well as on the names. The numbers are SDL3's SDL_GamepadButton and
+ * SDL_GamepadAxis values (SDL_gamepad.h): buttons SOUTH 0, EAST 1, WEST 2, NORTH 3,
+ * BACK 4, GUIDE 5, START 6, LEFT_STICK 7, RIGHT_STICK 8, LEFT_SHOULDER 9,
+ * RIGHT_SHOULDER 10, DPAD_UP 11, DPAD_DOWN 12, DPAD_LEFT 13, DPAD_RIGHT 14; axes
+ * LEFTX 0, LEFTY 1, RIGHTX 2, RIGHTY 3, LEFT_TRIGGER 4, RIGHT_TRIGGER 5. */
+static void test_pad_index_literals(void)
+{
+    VrInputMapState s;
+    VrPadState out;
+    VrInputActions all;
+    vr_input_map_init(&s);
+
+    /* Face buttons (has_back true, so no grace window on them). select is SOUTH. */
+    expect_pressed(&s, (VrInputActions){ .button_a = true }, true, 0);
+    expect_pressed(&s, (VrInputActions){ .button_b = true }, true, 1);
+    expect_pressed(&s, (VrInputActions){ .button_x = true }, true, 2);
+    expect_pressed(&s, (VrInputActions){ .button_y = true }, true, 3);
+    expect_pressed(&s, (VrInputActions){ .select = true }, true, 0);
+
+    /* BACK and START, on a profile without Back so neither waits out the grace window. */
+    expect_pressed(&s, (VrInputActions){ .view = true }, false, 4);
+    expect_pressed(&s, (VrInputActions){ .menu = true }, false, 6);
+
+    /* Stick clicks, shoulders, d-pad. */
+    expect_pressed(&s, (VrInputActions){ .left_stick_click = true }, true, 7);
+    expect_pressed(&s, (VrInputActions){ .right_stick_click = true }, true, 8);
+    expect_pressed(&s, (VrInputActions){ .left_shoulder = true }, true, 9);
+    expect_pressed(&s, (VrInputActions){ .right_shoulder = true }, true, 10);
+    expect_pressed(&s, (VrInputActions){ .dpad_up = true }, true, 11);
+    expect_pressed(&s, (VrInputActions){ .dpad_down = true }, true, 12);
+    expect_pressed(&s, (VrInputActions){ .dpad_left = true }, true, 13);
+    expect_pressed(&s, (VrInputActions){ .dpad_right = true }, true, 14);
+
+    /* Axes. OpenXR up is SDL negative on the Y axes, as in test_sticks. */
+    step(&s, (VrInputActions){ .left_stick_x = 1.0f }, true, true, 10, &out);
+    CHECK(out.axes[0] == 32767);
+    step(&s, (VrInputActions){ .left_stick_y = 1.0f }, true, true, 10, &out);
+    CHECK(out.axes[1] == -32767);
+    step(&s, (VrInputActions){ .right_stick_x = 1.0f }, true, true, 10, &out);
+    CHECK(out.axes[2] == 32767);
+    step(&s, (VrInputActions){ .right_stick_y = 1.0f }, true, true, 10, &out);
+    CHECK(out.axes[3] == -32767);
+    step(&s, (VrInputActions){ .left_trigger = 1.0f }, true, true, 10, &out);
+    CHECK(out.axes[4] == 32767);
+    step(&s, (VrInputActions){ .right_trigger = 1.0f }, true, true, 10, &out);
+    CHECK(out.axes[5] == 32767);
+
+    /* GUIDE (5) is never set, even with every button input held. */
+    memset(&all, 0, sizeof all);
+    all.button_a = all.button_b = all.button_x = all.button_y = true;
+    all.left_stick_click = all.right_stick_click = true;
+    all.left_shoulder = all.right_shoulder = true;
+    all.dpad_up = all.dpad_down = all.dpad_left = all.dpad_right = true;
+    all.select = true;
+    all.menu = all.view = true;
+    step(&s, all, true, true, 10, &out);
+    CHECK(!out.buttons[5]);
+}
+
 int main(void)
 {
     test_rest();
@@ -813,6 +921,7 @@ int main(void)
     test_touch_profile();
     test_simple_profile();
     test_actions_set();
+    test_pad_index_literals();
 
     if (g_failures) {
         printf("%d check(s) FAILED\n", g_failures);

@@ -42,7 +42,11 @@ enum {
 
 #define VR_SAFETY_HOLD_MS   2000u /* Back+Start (or Start alone without Back) held this long quits */
 #define VR_COMBO_GRACE_MS    250u /* a lone Back/Start waits this long for its partner before reaching the game */
-#define VR_TAP_PULSE_MS       50u /* a tap released inside the grace window is still delivered this long */
+/* A tap released inside the grace window is delivered as a pulse of at least
+ * VR_TAP_PULSE_MS. The pulse runs in whole frames (the release frame, then frames
+ * until 50 ms of frame time has counted down), so its exact length is a multiple
+ * of the frame time: it is 50 ms only when the frame time divides 50. */
+#define VR_TAP_PULSE_MS       50u
 #define VR_MAX_STEP_MS       100u /* dt clamp: one long hitch cannot complete the 2 s hold */
 #define VR_SQUEEZE_PRESS    0.6f  /* squeeze -> bumper hysteresis */
 #define VR_SQUEEZE_RELEASE  0.4f
