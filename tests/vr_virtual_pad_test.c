@@ -12,7 +12,10 @@
  *  - stick axes pass raw values through unchanged;
  *  - trigger axes rest at raw -32768 and map the full raw range to 0..32767;
  *  - the VR pad (vr_input_pad.c) fed by vr_input_map_step() reads back as the
- *    intended SDL gamepad elements, and nothing while the session is not focused. */
+ *    intended SDL gamepad elements, and nothing while the session is not focused;
+ *  - vr_input_pad_attach() sets SDL_HINT_JOYSTICK_DIRECTINPUT from its argument.
+ *    Only the hint value is checked here; the Windows joystick driver that reads it
+ *    is not built on Linux, so its effect is verified on Windows. */
 #include <SDL3/SDL.h>
 
 #include <stdbool.h>
@@ -127,6 +130,20 @@ static void check_raw_attach(void)
     CHECK(SDL_DetachVirtualJoystick(id));
 }
 
+/* attach() must put its backend argument into the hint before SDL's joystick init. */
+static void check_backend_hint(void)
+{
+    CHECK(vr_input_pad_attach(false));
+    const char *hint = SDL_GetHint(SDL_HINT_JOYSTICK_DIRECTINPUT);
+    CHECK(hint != NULL && strcmp(hint, "0") == 0);
+    vr_input_pad_detach();
+
+    CHECK(vr_input_pad_attach(true));
+    hint = SDL_GetHint(SDL_HINT_JOYSTICK_DIRECTINPUT);
+    CHECK(hint != NULL && strcmp(hint, "1") == 0);
+    vr_input_pad_detach();
+}
+
 /* One frame: map the actions, write the pad, let SDL read it back. dt is 10 ms
  * (never 0: vr_lone_button needs a positive dt to end a tap pulse). */
 static void map_frame(VrInputMapState *s, const VrInputActions *a, bool focused)
@@ -155,7 +172,7 @@ static void expect_no_buttons(SDL_Gamepad *pad)
 
 static void check_mapped_chain(void)
 {
-    CHECK(vr_input_pad_attach());
+    CHECK(vr_input_pad_attach(false));
     CHECK(vr_input_pad_attached());
     SDL_JoystickID id = vr_input_pad_id();
     CHECK(id != 0);
@@ -185,6 +202,15 @@ static void check_mapped_chain(void)
     CHECK(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY) == -32767);
     CHECK(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX) == 0);
 
+    /* Right stick pushed up (OpenXR +y): SDL RIGHTY is negative up. A sign flip here
+     * would read as the stick pushed down. */
+    vr_input_map_init(&s);
+    memset(&a, 0, sizeof(a));
+    a.right_stick_y = 1.0f;
+    map_frame(&s, &a, true);
+    CHECK(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY) == -32767);
+    CHECK(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX) == 0);
+
     /* A is SOUTH and nothing else. */
     vr_input_map_init(&s);
     memset(&a, 0, sizeof(a));
@@ -205,6 +231,89 @@ static void check_mapped_chain(void)
     a.left_squeeze = 1.0f;
     map_frame(&s, &a, true);
     expect_only_button(pad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
+
+    /* B, X and Y are EAST, WEST and NORTH. */
+    vr_input_map_init(&s);
+    memset(&a, 0, sizeof(a));
+    a.button_b = true;
+    map_frame(&s, &a, true);
+    expect_only_button(pad, SDL_GAMEPAD_BUTTON_EAST);
+
+    vr_input_map_init(&s);
+    memset(&a, 0, sizeof(a));
+    a.button_x = true;
+    map_frame(&s, &a, true);
+    expect_only_button(pad, SDL_GAMEPAD_BUTTON_WEST);
+
+    vr_input_map_init(&s);
+    memset(&a, 0, sizeof(a));
+    a.button_y = true;
+    map_frame(&s, &a, true);
+    expect_only_button(pad, SDL_GAMEPAD_BUTTON_NORTH);
+
+    /* Right grip squeezed past the press threshold is RIGHT_SHOULDER (the gear-up bumper). */
+    vr_input_map_init(&s);
+    memset(&a, 0, sizeof(a));
+    a.right_squeeze = 1.0f;
+    map_frame(&s, &a, true);
+    expect_only_button(pad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
+
+    /* Stick clicks are LEFT_STICK and RIGHT_STICK. */
+    vr_input_map_init(&s);
+    memset(&a, 0, sizeof(a));
+    a.left_stick_click = true;
+    map_frame(&s, &a, true);
+    expect_only_button(pad, SDL_GAMEPAD_BUTTON_LEFT_STICK);
+
+    vr_input_map_init(&s);
+    memset(&a, 0, sizeof(a));
+    a.right_stick_click = true;
+    map_frame(&s, &a, true);
+    expect_only_button(pad, SDL_GAMEPAD_BUTTON_RIGHT_STICK);
+
+    /* D-pad up and sideways are DPAD_UP, DPAD_LEFT and DPAD_RIGHT. */
+    vr_input_map_init(&s);
+    memset(&a, 0, sizeof(a));
+    a.dpad_up = true;
+    map_frame(&s, &a, true);
+    expect_only_button(pad, SDL_GAMEPAD_BUTTON_DPAD_UP);
+
+    vr_input_map_init(&s);
+    memset(&a, 0, sizeof(a));
+    a.dpad_left = true;
+    map_frame(&s, &a, true);
+    expect_only_button(pad, SDL_GAMEPAD_BUTTON_DPAD_LEFT);
+
+    vr_input_map_init(&s);
+    memset(&a, 0, sizeof(a));
+    a.dpad_right = true;
+    map_frame(&s, &a, true);
+    expect_only_button(pad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT);
+
+    /* Menu is START and View is BACK, both held back for VR_COMBO_GRACE_MS (250 ms) in
+     * case the partner follows. Holding 100 frames of 10 ms (1 s) lets them through,
+     * and stays under the 2 s safety hold. */
+    vr_input_map_init(&s);
+    memset(&a, 0, sizeof(a));
+    a.menu = true;
+    for (int f = 0; f < 100; ++f)
+        map_frame(&s, &a, true);
+    expect_only_button(pad, SDL_GAMEPAD_BUTTON_START);
+
+    vr_input_map_init(&s);
+    memset(&a, 0, sizeof(a));
+    a.view = true;
+    for (int f = 0; f < 100; ++f)
+        map_frame(&s, &a, true);
+    expect_only_button(pad, SDL_GAMEPAD_BUTTON_BACK);
+
+    /* Back and Start together is the safety combo: neither reaches the game, and GUIDE
+     * (the system button) is never driven by the map. */
+    vr_input_map_init(&s);
+    memset(&a, 0, sizeof(a));
+    a.menu = a.view = true;
+    map_frame(&s, &a, true);
+    expect_no_buttons(pad);
 
     /* Not focused with everything pressed: every axis 0 and no button. */
     vr_input_map_init(&s);
@@ -242,6 +351,7 @@ int main(void)
         return 1;
     }
     check_raw_attach();
+    check_backend_hint();
     check_mapped_chain();
     SDL_Quit();
     if (g_failures) {

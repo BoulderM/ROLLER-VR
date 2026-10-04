@@ -370,6 +370,7 @@ pub fn build(b: *std.Build) void {
                 "tests/vr_virtual_pad_test.c",
                 "PROJECTS/ROLLER/vr_input_pad.c",
                 "PROJECTS/ROLLER/vr_input_map.c",
+                "PROJECTS/ROLLER/vr_log.c",
             }, .flags = c_flags });
             vpad_mod.addIncludePath(b.path("PROJECTS/ROLLER"));
             vpad_mod.addIncludePath(sdl_vr.builder.path("include"));
