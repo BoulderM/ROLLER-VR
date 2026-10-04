@@ -1662,7 +1662,9 @@ void frontend_menu_update(void)
   frontend_main_menu_apply_type_switch();
   nFrames = frames;
   frames = 0;
-  if (ticks > 1080 && !iFrontendMainMenuQuitConfirmed && !network_on
+  /* --vr-menu: the menu is held open for the headset, so the idle return to
+   * the intro demo must never fire (there is no key press to stop it). */
+  if (ticks > 1080 && !g_bVRMenuMode && !iFrontendMainMenuQuitConfirmed && !network_on
       && eFrontendMainMenuFadeOutAction == eMAIN_MENU_FADE_OUT_NONE) {
     intro = -1;
     iFrontendMainMenuContinue = -1;
