@@ -636,7 +636,8 @@ static void print_usage(FILE *f, const char *argv0)
   cli_fprintf(f, " --out DIR              output directory for snapshot PNGs (--snapshot only)\n");
   cli_fprintf(f, " --gpu-parity BACKEND   run F-S1 parity (vulkan, direct3d12, or metal)\n");
 #if defined(ROLLER_VR_BUILD)
-  cli_fprintf(f, " --vr                    boot headless into VR mode (windowless GPU device, direct race start)\n");
+  cli_fprintf(f, " --vr                    boot into VR mode at the main menu (windowless GPU device)\n");
+  cli_fprintf(f, " --vr-demo               with --vr: run the attract-mode demo instead of the menu\n");
   cli_fprintf(f, " --vr-frames N           with --vr: quit cleanly after N stereo frames (default: run until closed)\n");
   cli_fprintf(f, " --vr-meters-to-world V  with --vr: world units per meter (default: derived from the car model)\n");
   cli_fprintf(f, " --vr-fake-head          with --vr: scripted head-pose sweep instead of the headset pose (testing)\n");

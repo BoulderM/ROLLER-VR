@@ -83,6 +83,31 @@ static int vr_ini_replace(const char *from, const char *to)
 #endif
 }
 
+/* Writes data to "<path>.tmp", then replaces path with it. On failure path is untouched. */
+static int vr_ini_write_atomic(const char *path, const char *data, size_t len)
+{
+    size_t plen = strlen(path);
+    char *tmp = (char *)malloc(plen + 5);
+    if (!tmp)
+        return 0;
+    memcpy(tmp, path, plen);
+    memcpy(tmp + plen, ".tmp", 5);
+    int ok = vr_ini_write_all(tmp, data, len) && vr_ini_replace(tmp, path);
+    if (!ok)
+        remove(tmp);
+    free(tmp);
+    return ok;
+}
+
+static int vr_ini_exists(const char *path)
+{
+    FILE *fp = fopen(path, "rb");
+    if (!fp)
+        return 0;
+    fclose(fp);
+    return 1;
+}
+
 static int vr_ini_eq_nocase(const char *a, size_t alen, const char *b)
 {
     size_t blen = strlen(b);
@@ -127,8 +152,7 @@ static int vr_ini_is_section(const char *line, size_t len, const char *name)
 }
 
 VrIniMergeResult vr_ini_merge_keys(const char *path, const char *backup_path,
-                                   const char *const *keys, const char *const *lines, int count,
-                                   bool *backed_up)
+                                   const char *const *keys, const char *const *lines, int count)
 {
     char *src = NULL;
     size_t src_len = 0;
@@ -231,28 +255,12 @@ VrIniMergeResult vr_ini_merge_keys(const char *path, const char *backup_path,
         return VR_INI_MERGE_UNCHANGED;
     }
 
+    /* The first backup is the user's original; never replace it. */
     VrIniMergeResult result = VR_INI_MERGE_WRITTEN;
-    if (backed_up && !*backed_up) {
-        if (!vr_ini_write_all(backup_path, src, src_len))
-            result = VR_INI_MERGE_ERROR;
-        else
-            *backed_up = true;
-    }
-    if (result == VR_INI_MERGE_WRITTEN) {
-        size_t plen = strlen(path);
-        char *tmp = (char *)malloc(plen + 5);
-        if (!tmp) {
-            result = VR_INI_MERGE_ERROR;
-        } else {
-            memcpy(tmp, path, plen);
-            memcpy(tmp + plen, ".tmp", 5);
-            if (!vr_ini_write_all(tmp, out.data, out.len) || !vr_ini_replace(tmp, path)) {
-                remove(tmp);
-                result = VR_INI_MERGE_ERROR;
-            }
-            free(tmp);
-        }
-    }
+    if (!vr_ini_exists(backup_path) && !vr_ini_write_atomic(backup_path, src, src_len))
+        result = VR_INI_MERGE_ERROR;
+    if (result == VR_INI_MERGE_WRITTEN && !vr_ini_write_atomic(path, out.data, out.len))
+        result = VR_INI_MERGE_ERROR;
     free(src);
     free(out.data);
     return result;

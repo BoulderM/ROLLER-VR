@@ -14,24 +14,24 @@
  *
  * The write is atomic: the new content goes to "<path>.tmp", which then replaces
  * <path> (MoveFileEx(MOVEFILE_REPLACE_EXISTING) on Windows, rename() elsewhere).
- * Before the first change, the original bytes are copied to backup_path. */
+ * Before the first change, the original bytes are copied to backup_path, unless that
+ * file already exists: a backup is never replaced, so it always holds the first
+ * original. */
 #ifndef VR_INI_MERGE_H
 #define VR_INI_MERGE_H
 
 #include <stdbool.h>
 
 typedef enum {
-    VR_INI_MERGE_WRITTEN = 0,   /* file changed (backup made if *backed_up was false) */
+    VR_INI_MERGE_WRITTEN = 0,   /* file changed (backup made if none existed yet) */
     VR_INI_MERGE_UNCHANGED,     /* every key already had exactly this line; nothing written */
     VR_INI_MERGE_MISSING,       /* path does not exist; nothing written */
     VR_INI_MERGE_ERROR          /* read/backup/write/replace failed; the original is untouched */
 } VrIniMergeResult;
 
 /* keys[i] is set to the full line lines[i] (no line ending, e.g. "P1Left=axis;..."),
- * for i < count. *backed_up: in/out; when false, backup_path is (over)written with the
- * original content before the change and the flag is set, so one run backs up once. */
+ * for i < count. */
 VrIniMergeResult vr_ini_merge_keys(const char *path, const char *backup_path,
-                                   const char *const *keys, const char *const *lines, int count,
-                                   bool *backed_up);
+                                   const char *const *keys, const char *const *lines, int count);
 
 #endif /* VR_INI_MERGE_H */

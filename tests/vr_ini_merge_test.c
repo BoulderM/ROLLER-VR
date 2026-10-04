@@ -117,9 +117,7 @@ static void test_replace_keyboard_lines(void)
 {
     cleanup();
     write_file(g_ini, k_user_ini);
-    bool backed_up = false;
-    CHECK(vr_ini_merge_keys(g_ini, g_bak, k_keys, k_lines, 6, &backed_up) == VR_INI_MERGE_WRITTEN);
-    CHECK(backed_up);
+    CHECK(vr_ini_merge_keys(g_ini, g_bak, k_keys, k_lines, 6) == VR_INI_MERGE_WRITTEN);
     char *after = read_file(g_ini);
     char *bak = read_file(g_bak);
     CHECK(after && bak);
@@ -134,14 +132,14 @@ static void test_replace_keyboard_lines(void)
 
     /* Same lines again: nothing to do, and the backup is not touched. */
     write_file(g_bak, "sentinel");
-    CHECK(vr_ini_merge_keys(g_ini, g_bak, k_keys, k_lines, 6, &backed_up) == VR_INI_MERGE_UNCHANGED);
+    CHECK(vr_ini_merge_keys(g_ini, g_bak, k_keys, k_lines, 6) == VR_INI_MERGE_UNCHANGED);
     char *bak2 = read_file(g_bak);
     CHECK(bak2 && strcmp(bak2, "sentinel") == 0);
 
-    /* A later change in the same run (backed_up already true) keeps the first backup. */
+    /* A later change keeps the existing backup: it is never replaced. */
     const char *k1[1] = { "P1Left" };
     const char *l1[1] = { "P1Left=keyboard;scancode=44" };
-    CHECK(vr_ini_merge_keys(g_ini, g_bak, k1, l1, 1, &backed_up) == VR_INI_MERGE_WRITTEN);
+    CHECK(vr_ini_merge_keys(g_ini, g_bak, k1, l1, 1) == VR_INI_MERGE_WRITTEN);
     char *bak3 = read_file(g_bak);
     CHECK(bak3 && strcmp(bak3, "sentinel") == 0);
     free(after); free(bak); free(bak2); free(bak3);
@@ -156,10 +154,9 @@ static void test_insert_missing_into_input_section(void)
         "[Other]\r\n"
         "X=1\r\n";
     write_file(g_ini, ini);
-    bool backed_up = false;
     const char *keys[2] = { "P1Left", "P1Right" };
     const char *lines[2] = { "P1Left=A", "P1Right=B" };
-    CHECK(vr_ini_merge_keys(g_ini, g_bak, keys, lines, 2, &backed_up) == VR_INI_MERGE_WRITTEN);
+    CHECK(vr_ini_merge_keys(g_ini, g_bak, keys, lines, 2) == VR_INI_MERGE_WRITTEN);
     char *after = read_file(g_ini);
     CHECK(after && strcmp(after,
         "[Input]\r\n"
@@ -177,17 +174,16 @@ static void test_append_section_and_case_and_duplicates(void)
     /* No [Input], no trailing newline; a key in other case and twice. */
     const char *ini = "[Settings]\n  p1left = old\nMusicSource=MIDI\nP1LEFT=older";
     write_file(g_ini, ini);
-    bool backed_up = false;
     const char *keys[2] = { "P1Left", "P1Up" };
     const char *lines[2] = { "P1Left=A", "P1Up=C" };
-    CHECK(vr_ini_merge_keys(g_ini, g_bak, keys, lines, 2, &backed_up) == VR_INI_MERGE_WRITTEN);
+    CHECK(vr_ini_merge_keys(g_ini, g_bak, keys, lines, 2) == VR_INI_MERGE_WRITTEN);
     char *after = read_file(g_ini);
     CHECK(after && strcmp(after, "[Settings]\nP1Left=A\nMusicSource=MIDI\nP1Left=A\n[Input]\nP1Up=C\n") == 0);
     free(after);
     /* Comments and sections that look like keys are never matched. */
     cleanup();
     write_file(g_ini, "; P1Left=x\n#P1Left=y\n[P1Left=z]\n");
-    CHECK(vr_ini_merge_keys(g_ini, g_bak, keys, lines, 1, &backed_up) == VR_INI_MERGE_WRITTEN);
+    CHECK(vr_ini_merge_keys(g_ini, g_bak, keys, lines, 1) == VR_INI_MERGE_WRITTEN);
     after = read_file(g_ini);
     CHECK(after && strcmp(after, "; P1Left=x\n#P1Left=y\n[P1Left=z]\n[Input]\nP1Left=A\n") == 0);
     free(after);
@@ -196,9 +192,7 @@ static void test_append_section_and_case_and_duplicates(void)
 static void test_missing_file(void)
 {
     cleanup();
-    bool backed_up = false;
-    CHECK(vr_ini_merge_keys(g_ini, g_bak, k_keys, k_lines, 6, &backed_up) == VR_INI_MERGE_MISSING);
-    CHECK(!backed_up);
+    CHECK(vr_ini_merge_keys(g_ini, g_bak, k_keys, k_lines, 6) == VR_INI_MERGE_MISSING);
     CHECK(!file_exists(g_ini));
     CHECK(!file_exists(g_bak));
 }

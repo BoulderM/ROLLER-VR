@@ -1432,7 +1432,9 @@ void InputShutdown(void)
     InputPhoneShutdown();
 #endif
 #if defined(_WIN32)
-  SDL_QuitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD);
+  /* Under WinMM InputInit() took no SDL reference, so a quit here would drop the VR pad's. */
+  if (InputGetSDLInitFlags())
+    SDL_QuitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD);
 #elif defined(IS_ANDROID)
   SDL_QuitSubSystem(SDL_INIT_SENSOR);
   SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
@@ -2524,11 +2526,10 @@ static void InputVRFormatBindingLine(int iAction, char *szOut, size_t uiOutLen)
  * bound them to the pad) without rewriting the rest of ROLLER.INI: only those six
  * lines change (each keeps its keyboard scancode), every other line stays byte for
  * byte, the write is atomic and the original is copied to ROLLER.INI.bak first
- * (once per run). Without a ROLLER.INI the game's own writer creates it. Returns 1
- * when the file now holds the bindings, 0 on failure (logged). */
+ * (only if that backup does not exist yet). Without a ROLLER.INI the game's own writer
+ * creates it. Returns 1 when the file now holds the bindings, 0 on failure (logged). */
 int InputVRSaveP1PadBindings(void)
 {
-  static bool s_bBackedUp = false;
   char aszLines[6][1024];
   const char *apszLines[6];
   const char *apszKeys[6];
@@ -2558,11 +2559,11 @@ int InputVRSaveP1PadBindings(void)
   }
   SDL_snprintf(szBackup, sizeof(szBackup), "%s.bak", szPath);
 
-  eResult = vr_ini_merge_keys(szPath, szBackup, apszKeys, apszLines, 6, &s_bBackedUp);
+  eResult = vr_ini_merge_keys(szPath, szBackup, apszKeys, apszLines, 6);
   switch (eResult) {
     case VR_INI_MERGE_WRITTEN:
-      SDL_Log("VR input: saved the P1 VR controller pad bindings to %s (6 lines; other lines unchanged; "
-              "original kept as %s)", szPath, szBackup);
+      SDL_Log("VR input: saved the P1 VR controller pad bindings to %s (6 lines changed; original kept as %s; "
+              "the game's normal save on exit may rewrite the file)", szPath, szBackup);
       return 1;
     case VR_INI_MERGE_UNCHANGED:
       SDL_Log("VR input: %s already holds the P1 VR controller pad bindings", szPath);
