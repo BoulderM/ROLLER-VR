@@ -758,6 +758,16 @@ void DrawBuilding(int iBuildingIdx, uint8 *pScrPtr)
       int yp = viewIntY[i] * VIEWDIST / iVz + ybase;
       screenX[i] = (scr_size * xp) >> 6;
       screenY[i] = (scr_size * (199 - yp)) >> 6;
+      // VR eye only: the 80-unit limit above belongs to the flat window's
+      // projection. The eye draws from its own, much closer near plane with
+      // a wider FOV, so take the flag from the eye's projection instead, or
+      // walls beside the car pop in and out as the head turns. No-op in the
+      // flat game. (screenX/screenY are not used to draw: the GPU projects
+      // the world corners with the eye's MVP.)
+      int iEyeClipped;
+      if (game_render_vr_eye_near_clipped((float)viewIntX[i], (float)viewIntY[i],
+                                          (float)viewIntZ[i], &iEyeClipped))
+        iClipped = iEyeClipped;
       screenClipped[i] = iClipped;
     }
   }

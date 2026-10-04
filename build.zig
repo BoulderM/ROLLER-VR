@@ -942,6 +942,7 @@ fn configureRenderQueue3DTests(
     vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_sky_halfplane_test", "tests/vr_sky_halfplane_test.c", "PROJECTS/ROLLER/vr_camera_compose.c"));
     vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_effect_projection_test", "tests/vr_effect_projection_test.c", "PROJECTS/ROLLER/vr_camera_compose.c"));
     vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_billboard_yaw_test", "tests/vr_billboard_yaw_test.c", "PROJECTS/ROLLER/vr_camera_compose.c"));
+    vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_building_near_test", "tests/vr_building_near_test.c", "PROJECTS/ROLLER/vr_camera_compose.c"));
 
     const test_step = b.step("test", "Run focused unit tests and optional seam checks");
     test_step.dependOn(render_queue_tests);

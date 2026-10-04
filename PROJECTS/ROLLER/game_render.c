@@ -1129,6 +1129,19 @@ bool game_render_vr_eye_project(float vx, float vy, float vz,
 #endif
 }
 
+bool game_render_vr_eye_near_clipped(float vx, float vy, float vz, int *outClipped) {
+#if defined(ROLLER_VR_BUILD)
+    if (!s_vrEyeProjActive) return false;
+    *outClipped = vr_eye_corner_near_clipped(vx, vy, vz, s_vrEyeTan[0], s_vrEyeTan[1],
+                                             s_vrEyeTan[2], s_vrEyeTan[3],
+                                             s_vrEyeNear, s_vrEyeFar) ? 1 : 0;
+    return true;
+#else
+    (void)vx; (void)vy; (void)vz; (void)outClipped;
+    return false;
+#endif
+}
+
 void game_render_quad_ndc(GameRenderer *renderer, int surfaceType,
                           float ndcX[4], float ndcY[4], TextureHandle handle) {
 #if !defined(IS_WASM)

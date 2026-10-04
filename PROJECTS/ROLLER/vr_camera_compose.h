@@ -184,6 +184,25 @@ bool vr_eye_view_to_ndc(float vx, float vy, float vz,
                         float near_plane, float far_plane,
                         float *out_x, float *out_y, float *out_z);
 
+/* --- VR building corner near-plane flag ---------------------------------
+ * DrawBuilding() drops a polygon when all four of its corners are "clipped".
+ * The flat game marks a corner clipped when its camera-space depth is below
+ * 80 world units, the flat window's own near limit (VIEWDIST/xbase/ybase/
+ * scr_size projection). A VR eye draws much closer than that (its near plane
+ * is 5 cm, ~15.6 world units) and with a far wider FOV, so a wall right
+ * beside the car whose corners all sit between the two planes was dropped
+ * while the eye would have shown it, and it popped in and out as the head
+ * turned and moved those corners across 80.
+ *
+ * This decides the flag through the eye's own projection instead: the point
+ * goes through vr_eye_view_to_ndc() and is clipped when it is behind the eye
+ * (vz <= 0) or its NDC depth is below 0, i.e. it lies in front of the eye's
+ * near plane. Arguments as vr_eye_view_to_ndc(). */
+bool vr_eye_corner_near_clipped(float vx, float vy, float vz,
+                                float tan_left, float tan_right,
+                                float tan_up, float tan_down,
+                                float near_plane, float far_plane);
+
 /* --- VR scenery billboard yaw ------------------------------------------
  * Trees and advert balloons (building plans 9, 10 and 15) are flat cards in
  * the plan's Y-Z plane. The flat game turns them to the camera's heading,

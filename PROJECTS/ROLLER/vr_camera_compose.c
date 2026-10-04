@@ -217,6 +217,18 @@ bool vr_eye_view_to_ndc(float vx, float vy, float vz,
     return true;
 }
 
+bool vr_eye_corner_near_clipped(float vx, float vy, float vz,
+                                float tan_left, float tan_right,
+                                float tan_up, float tan_down,
+                                float near_plane, float far_plane)
+{
+    float x, y, z;
+    if (!vr_eye_view_to_ndc(vx, vy, vz, tan_left, tan_right, tan_up, tan_down,
+                            near_plane, far_plane, &x, &y, &z))
+        return true;   /* behind the eye */
+    return z < 0.0f;   /* in front of the eye's near plane */
+}
+
 float vr_billboard_yaw_deg(float obj_x, float obj_y, float view_x, float view_y,
                            float fallback_deg)
 {

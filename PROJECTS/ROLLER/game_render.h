@@ -370,6 +370,11 @@ void game_render_clear_vr_eye_projection(void);
 bool game_render_vr_eye_active(void);
 bool game_render_vr_eye_project(float vx, float vy, float vz,
                                 float *outNdcX, float *outNdcY, float *outNdcZ);
+/* VR only: DrawBuilding()'s per-corner near-plane flag from the current
+ * eye's own projection (vr_eye_corner_near_clipped()) instead of the flat
+ * window's 80-unit limit. Returns false, writing nothing, when not in a VR
+ * eye (always in the flat build); the caller then keeps the flat rule. */
+bool game_render_vr_eye_near_clipped(float vx, float vy, float vz, int *outClipped);
 /* game_render_quad_screen()'s GPU particle path with NDC corners instead of
  * flat-window pixels (no palette remap); does nothing outside GPU mode. */
 void game_render_quad_ndc(GameRenderer *renderer, int surfaceType,
