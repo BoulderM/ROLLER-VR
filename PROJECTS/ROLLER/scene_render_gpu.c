@@ -5630,6 +5630,100 @@ static void save_picked_texture_png(const SceneGPUTextureSlot *slot, int surfIdx
  * Callers always set verts[i].u = verts[i].v = 0 (confirmed in drawtrk3.c).
  * UVs come from startsx[4] / startsy[4] globals (16.16 fixed-point).
  * -------------------------------------------------------------------------- */
+/* VR headset-free test hook: world-quad appearance stability. While enabled
+ * (eye 0 of a VR eye's draw_road(), see vr_runtime.c), every world quad that
+ * reaches the vertex stage is keyed by its world corners, and its texture,
+ * draw kind and UVs are compared with the same quad's previous frame. In a
+ * frozen world those never legitimately change with the head, so any in-view
+ * change is a texture/UV pop. Classes: 0 = track, 1 = building/sign/tree. */
+#define VRQ_SLOTS 16384
+typedef struct { uint64_t key; const void *tex; int kind; float cu[4], cv[4]; int frame; } VrQuadRec;
+static VrQuadRec s_vrq[2][VRQ_SLOTS];
+static int  s_vrqCur = 0, s_vrqFrame = 1;
+static bool s_vrqOn = false;
+static SceneRenderGpuVrQuadDiag s_vrqAcc;
+static int  s_vrqLogLeft = 0;
+
+void scene_render_gpu_vr_quad_diag_enable(bool on) {
+    s_vrqOn = on;
+    if (s_vrqLogLeft == 0) {
+        const char *env = SDL_getenv("ROLLER_VR_QUAD_DIAG_LOG");
+        s_vrqLogLeft = env ? SDL_atoi(env) : -1;
+    }
+}
+
+static uint64_t vrq_key(const SceneRenderVertex v[4]) {
+    uint64_t h = 1469598103934665603ull;
+    for (int k = 0; k < 4; k++) {
+        float f[3] = { v[k].x, v[k].y, v[k].z };
+        uint32_t u[3];
+        memcpy(u, f, sizeof(u));
+        for (int j = 0; j < 3; j++) { h ^= u[j]; h *= 1099511628211ull; }
+    }
+    return h ? h : 1;
+}
+
+static void vrq_record(const SceneRendererGPU *r, const SceneRenderVertex v[4], bool isBld,
+                       const void *tex, int kind, const float cu[4], const float cv[4]) {
+    if (!s_vrqOn || !r->vrEyeMvpOverrideSet) return;
+    const float *m = r->vrEyeMvpOverride;
+    int outL = 0, outR = 0, outB = 0, outT = 0, outW = 0;
+    for (int k = 0; k < 4; k++) {
+        float cx = m[0]*v[k].x + m[4]*v[k].y + m[8]*v[k].z + m[12];
+        float cy = m[1]*v[k].x + m[5]*v[k].y + m[9]*v[k].z + m[13];
+        float cw = m[3]*v[k].x + m[7]*v[k].y + m[11]*v[k].z + m[15];
+        if (cw <= 0.0f) { outW++; continue; }
+        if (cx < -cw) outL++;
+        if (cx >  cw) outR++;
+        if (cy < -cw) outB++;
+        if (cy >  cw) outT++;
+    }
+    bool inView = !(outW == 4 || outL == 4 || outR == 4 || outB == 4 || outT == 4);
+    int c = isBld ? 1 : 0;
+    uint64_t key = vrq_key(v);
+    VrQuadRec *cur = s_vrq[s_vrqCur], *prev = s_vrq[s_vrqCur ^ 1];
+    unsigned slot = (unsigned)(key % VRQ_SLOTS);
+    for (int probe = 0; probe < VRQ_SLOTS; probe++, slot = (slot + 1) % VRQ_SLOTS) {
+        if (cur[slot].frame != s_vrqFrame) {
+            cur[slot] = (VrQuadRec){ key, tex, kind, {cu[0],cu[1],cu[2],cu[3]}, {cv[0],cv[1],cv[2],cv[3]}, s_vrqFrame };
+            break;
+        }
+        if (cur[slot].key == key) return;  /* duplicate quad this frame */
+    }
+    if (!inView) return;
+    s_vrqAcc.nInView[c]++;
+    slot = (unsigned)(key % VRQ_SLOTS);
+    for (int probe = 0; probe < VRQ_SLOTS; probe++, slot = (slot + 1) % VRQ_SLOTS) {
+        if (prev[slot].frame != s_vrqFrame - 1) { s_vrqAcc.nNew[c]++; return; }
+        if (prev[slot].key != key) continue;
+        s_vrqAcc.nMatched[c]++;
+        bool texCh = prev[slot].tex != tex || prev[slot].kind != kind;
+        bool uvCh = false;
+        for (int k = 0; k < 4; k++)
+            if (fabsf(prev[slot].cu[k] - cu[k]) > 1e-3f || fabsf(prev[slot].cv[k] - cv[k]) > 1e-3f) uvCh = true;
+        if (texCh) s_vrqAcc.nTexChanged[c]++;
+        if (uvCh)  s_vrqAcc.nUvChanged[c]++;
+        if ((texCh || uvCh) && s_vrqLogLeft > 0) {
+            s_vrqLogLeft--;
+            SDL_Log("vr quad pop frame=%d class=%d tex %p->%p kind %d->%d "
+                    "cu (%.2f,%.2f,%.2f,%.2f)->(%.2f,%.2f,%.2f,%.2f) cv (%.2f,%.2f,%.2f,%.2f)->(%.2f,%.2f,%.2f,%.2f) "
+                    "v0=(%.0f,%.0f,%.0f) v2=(%.0f,%.0f,%.0f)",
+                    s_vrqFrame, c, prev[slot].tex, tex, prev[slot].kind, kind,
+                    prev[slot].cu[0], prev[slot].cu[1], prev[slot].cu[2], prev[slot].cu[3], cu[0], cu[1], cu[2], cu[3],
+                    prev[slot].cv[0], prev[slot].cv[1], prev[slot].cv[2], prev[slot].cv[3], cv[0], cv[1], cv[2], cv[3],
+                    v[0].x, v[0].y, v[0].z, v[2].x, v[2].y, v[2].z);
+        }
+        return;
+    }
+}
+
+void scene_render_gpu_vr_quad_diag_take(SceneRenderGpuVrQuadDiag *out) {
+    if (out) *out = s_vrqAcc;
+    memset(&s_vrqAcc, 0, sizeof(s_vrqAcc));
+    s_vrqCur ^= 1;
+    s_vrqFrame++;
+}
+
 void scene_render_gpu_quad_world_legacy(SceneRendererGPU *r,
                                          const SceneRenderVertex verts[4],
                                          SceneTextureHandle texture,
@@ -6165,6 +6259,8 @@ void scene_render_gpu_quad_world_legacy(SceneRendererGPU *r,
             pz[k] += delta * fwd_z;
         }
     }
+
+    vrq_record(r, verts, isBuilding || isSign || isTree || isBackTexSign, gpuTex, (int)kind, cu, cv);
 
     int base = r->vertexCount;
     static const int orderA[6] = {0,1,2, 0,2,3};

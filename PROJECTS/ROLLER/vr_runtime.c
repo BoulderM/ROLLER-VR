@@ -36,6 +36,7 @@
 #include "drawtrk3.h"  /* TrackSize -- periodic diag log (chunk count) */
 #include "building.h"  /* NumVisibleBuildings -- periodic diag log (building count) */
 #include "loadtrak.h"   /* TRAK_LEN -- far-plane diag (track chunks beyond the eye far plane) */
+#include "scene_render_gpu.h"  /* world-quad texture/UV stability diag */
 
 static SDL_GPUDevice *s_gpu;
 static VkInstance s_vk_instance;
@@ -803,6 +804,14 @@ bool vr_locate_views(XrTime predicted_display_time, XrView out_views[2])
             yawRad = 0.0f;
         float pitchRad = sinf((float)frame * 0.02f) * 0.15f;  /* +-~8.6 deg */
         float rollRad  = sinf((float)frame * 0.013f) * 0.10f; /* +-~5.7 deg */
+        /* Test hook (ROLLER_VR_FAKE_HEAD_YAW_ONLY=1): pure yaw, no pitch, roll
+         * or position wobble, so with a frozen world adjacent eye images differ
+         * by an exact rotation homography (anything else is a pop). */
+        static int s_yaw_only = -1;
+        if (s_yaw_only < 0)
+            s_yaw_only = SDL_getenv("ROLLER_VR_FAKE_HEAD_YAW_ONLY") != NULL;
+        if (s_yaw_only)
+            pitchRad = rollRad = 0.0f;
         float cy = cosf(yawRad * 0.5f),   sy = sinf(yawRad * 0.5f);
         float cp = cosf(pitchRad * 0.5f), sp = sinf(pitchRad * 0.5f);
         float cr = cosf(rollRad * 0.5f),  sr = sinf(rollRad * 0.5f);
@@ -813,9 +822,9 @@ bool vr_locate_views(XrTime predicted_display_time, XrView out_views[2])
             .w = cp*cy*cr + sp*sy*sr,
         };
         XrVector3f pos = {
-            .x = sinf((float)frame * 0.05f) * 0.05f,
+            .x = s_yaw_only ? 0.0f : sinf((float)frame * 0.05f) * 0.05f,
             .y = 0.0f,
-            .z = cosf((float)frame * 0.05f) * 0.02f,
+            .z = s_yaw_only ? 0.0f : cosf((float)frame * 0.05f) * 0.02f,
         };
         /* ~42-degree half-angles, a plausible stand-in HMD FOV. */
         XrFovf fov = { -0.733f, 0.733f, 0.733f, -0.733f };
@@ -933,6 +942,11 @@ static int   s_diag_effect_cut_in_view[2];
 /* Scenery billboard anchoring diag (headset-free): eye 0's figures from
  * game_render_vr_diag_sprite_take() after eye 0's draw_road(). */
 static GameRenderVrDiagSprites s_diag_sprites;
+/* Building polygon stability diag (headset-free): eye 0's figures from
+ * game_render_vr_diag_buildings_take() after eye 0's draw_road(). */
+static GameRenderVrDiagBuildings s_diag_buildings;
+/* World-quad texture/UV stability diag (headset-free), eye 0. */
+static SceneRenderGpuVrQuadDiag s_diag_quads;
 static int   s_diag_chunks_in_front = 0;
 static int   s_diag_chunks_beyond_far = 0;
 static float s_diag_max_chunk_depth = 0.0f;
@@ -1165,6 +1179,7 @@ bool vr_run_frame(void)
         if (s_diag_effects_in_view >= s_freeze_min_effects) {
             g_bVRTestFreeze = true;
             game_render_vr_diag_sprite_reset(); /* billboard drift is measured from here */
+            game_render_vr_diag_buildings_reset();
             vr_log_line("INFO", "test freeze engaged at presented frame %d (eye0 effects in view last frame=%d)",
                         s_vr_frames_presented, s_diag_effects_in_view);
         }
@@ -1460,10 +1475,27 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
          * BEFORE any of this call's cars are queued. */
         game_render_vr_diag_effect_take(NULL, NULL, NULL, NULL, NULL); /* drop anything from outside this eye */
         game_render_vr_diag_sprite_record(i == 0);
+        scene_render_gpu_vr_quad_diag_enable(i == 0);
         draw_road(pMainScrPtr, uiViewType, iDriveView, -1, 0);
+        scene_render_gpu_vr_quad_diag_enable(false);
+        if (i == 0) {
+            /* Buildings whose box is in this eye's view but that DrawBuilding()
+             * never saw (a selection-level drop). */
+            for (int b = 0; b < NumBuildings && b < MAX_VISIBLE_BUILDINGS; b++) {
+                float box[8][3];
+                for (int k = 0; k < 8; k++) {
+                    box[k][0] = BuildingBox[b][k].fX;
+                    box[k][1] = BuildingBox[b][k].fY;
+                    box[k][2] = BuildingBox[b][k].fZ;
+                }
+                game_render_vr_diag_building_check_selected(b, (const float (*)[3])box);
+            }
+        }
         game_render_vr_diag_sprite_record(false);
         if (i == 0) {
             game_render_vr_diag_sprite_take(&s_diag_sprites);
+            game_render_vr_diag_buildings_take(&s_diag_buildings);
+            scene_render_gpu_vr_quad_diag_take(&s_diag_quads);
             vr_diag_far_plane_chunks(); /* camera globals still hold eye 0's composed camera */
             s_diag_effects = game_render_vr_diag_effect_take(&s_diag_effects_in_view,
                                                              &s_diag_effect_mean_err,
@@ -1603,6 +1635,30 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
                                 s_diag_sprites.firstId, (double)s_diag_sprites.firstYawDeg,
                                 (double)s_diag_sprites.firstCenterNdc[0], (double)s_diag_sprites.firstCenterNdc[1],
                                 worlddirn);
+                if (i == 0)
+                    vr_log_line("INFO", "building diag frame %d eye0: buildings=%d inView=%d polys=%d inView=%d drawn=%d "
+                                        "droppedInView backface=%d near=%d other=%d unvisited=%d adjPolys=%d flips backface=%d near=%d other=%d unvisited=%d "
+                                        "buildingPops=%d firstPop=%d maxWorldMove=%.1f maxNdcDrift=%.4f "
+                                        "selectedMissing=%d firstMissing=%d queue=%d overflow=%d selected=%d",
+                                s_vr_frames_presented, s_diag_buildings.nBuildings, s_diag_buildings.nBuildingsInView,
+                                s_diag_buildings.nPolys, s_diag_buildings.nPolysInView, s_diag_buildings.nPolysDrawn,
+                                s_diag_buildings.nDroppedInView[1], s_diag_buildings.nDroppedInView[2],
+                                s_diag_buildings.nDroppedInView[3], s_diag_buildings.nDroppedInView[4],
+                                s_diag_buildings.nAdjPolys,
+                                s_diag_buildings.nFlips[1], s_diag_buildings.nFlips[2], s_diag_buildings.nFlips[3],
+                                s_diag_buildings.nFlips[4],
+                                s_diag_buildings.nBuildingPops, s_diag_buildings.firstPopId,
+                                (double)s_diag_buildings.maxWorldMove, (double)s_diag_buildings.maxNdcDrift,
+                                s_diag_buildings.nSelectedMissing, s_diag_buildings.firstMissingId,
+                                s_diag_buildings.queueCount, s_diag_buildings.queueOverflowed, NumVisibleBuildings);
+                if (i == 0)
+                    vr_log_line("INFO", "quad diag frame %d eye0: track inView=%d matched=%d new=%d texChanged=%d uvChanged=%d "
+                                        "building inView=%d matched=%d new=%d texChanged=%d uvChanged=%d",
+                                s_vr_frames_presented,
+                                s_diag_quads.nInView[0], s_diag_quads.nMatched[0], s_diag_quads.nNew[0],
+                                s_diag_quads.nTexChanged[0], s_diag_quads.nUvChanged[0],
+                                s_diag_quads.nInView[1], s_diag_quads.nMatched[1], s_diag_quads.nNew[1],
+                                s_diag_quads.nTexChanged[1], s_diag_quads.nUvChanged[1]);
             } else
                 vr_log_line("WARN", "eye PNG dump failed for %s", dump_path);
         }

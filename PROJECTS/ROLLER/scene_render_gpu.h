@@ -82,6 +82,12 @@ void scene_render_gpu_set_projection_reference_height(SceneRendererGPU *r,
  * override before each eye's own draw_road() call. NULL/never-called means
  * normal (non-VR) behavior is completely unaffected. */
 void scene_render_gpu_set_vr_eye_mvp(SceneRendererGPU *r, const float mvp[16]);
+/* VR headset-free test hook: world-quad texture/UV stability (see scene_render_gpu.c). */
+typedef struct SceneRenderGpuVrQuadDiag {
+    int nInView[2], nMatched[2], nNew[2], nTexChanged[2], nUvChanged[2];  /* [0] track, [1] building */
+} SceneRenderGpuVrQuadDiag;
+void scene_render_gpu_vr_quad_diag_enable(bool on);
+void scene_render_gpu_vr_quad_diag_take(SceneRenderGpuVrQuadDiag *out);
 
 /* Clears whatever override scene_render_gpu_set_vr_eye_mvp() last set, so
  * scene_render_gpu_build_vp() goes back to its normal camera-derived

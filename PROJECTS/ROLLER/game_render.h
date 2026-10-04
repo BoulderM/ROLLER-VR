@@ -413,6 +413,44 @@ void game_render_vr_diag_sprite_reset(void);
 void game_render_vr_diag_sprite(int id, const float corners[4][3], float yawDeg);
 void game_render_vr_diag_sprite_take(GameRenderVrDiagSprites *out);
 
+/* VR headset-free test hook: building and scenery polygon stability (eye 0
+ * of a VR eye's draw_road() only, like the sprite diag; does nothing
+ * elsewhere). DrawBuilding() reports every plan polygon with its world
+ * corners and what it decided (GAME_RENDER_VR_BLD_*). Per adjacent frame the
+ * diag counts polygons whose drawn/dropped decision flipped while they were
+ * inside the eye's clip volume in both frames, by drop reason, and buildings
+ * that went from some to no drawn polygons (or back) while in view. It also
+ * tracks how far the submitted world coordinates moved since first recorded
+ * (zero for world-fixed geometry). _check_selected() counts buildings whose
+ * bounding box is in the eye's view but that DrawBuilding() never saw this
+ * frame (a selection-level drop). _take() returns the totals and resets. */
+enum {
+    GAME_RENDER_VR_BLD_DRAWN = 0,
+    GAME_RENDER_VR_BLD_BACKFACE = 1,
+    GAME_RENDER_VR_BLD_NEAR = 2,
+    GAME_RENDER_VR_BLD_OTHER = 3,
+    GAME_RENDER_VR_BLD_UNVISITED = 4,  /* never reached by DrawBuilding()'s group loop */
+};
+typedef struct GameRenderVrDiagBuildings {
+    int   nBuildings, nBuildingsInView;     /* DrawBuilding() calls this frame */
+    int   nPolys, nPolysInView, nPolysDrawn;
+    int   nDroppedInView[5];                /* in-view polygons dropped, by reason */
+    int   nAdjPolys;                        /* in view both frames */
+    int   nFlips[5];                        /* drawn<->dropped flips, by the drop reason */
+    int   nBuildingPops;                    /* in view both frames, 0 <-> >0 drawn polys */
+    int   firstPopId;                       /* first popping building, -1 if none */
+    float maxWorldMove;                     /* world units since first recorded */
+    float maxNdcDrift;                      /* same, as eye NDC distance (in-view coords) */
+    int   nSelectedMissing;                 /* box in view, never drawn this frame */
+    int   firstMissingId;
+    int   queueCount, queueOverflowed;
+} GameRenderVrDiagBuildings;
+void game_render_vr_diag_building_poly(int id, int polyIdx, const float v[4][3], int reason);
+void game_render_vr_diag_building_coords(int id, const float (*coords)[3], int n);
+void game_render_vr_diag_building_check_selected(int id, const float box[8][3]);
+void game_render_vr_diag_buildings_take(GameRenderVrDiagBuildings *out);
+void game_render_vr_diag_buildings_reset(void);
+
 // Draw — HUD sprites
 void game_render_sprite(GameRenderer *renderer, int slot, int blockIdx,
                         int x, int y, int transparentColorIndex,

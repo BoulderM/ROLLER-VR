@@ -724,6 +724,16 @@ void DrawBuilding(int iBuildingIdx, uint8 *pScrPtr)
     game_render_vr_diag_sprite(iBuildingIdx, (const float (*)[3])aCorners,
                                billboard_render_yaw_deg(iBuildingIdx));
   }
+  {
+    /* VR headset-free test hook (no-op outside eye 0 of a VR eye's draw_road()). */
+    float aDiagCoords[32][3];
+    for (i = 0; i < byNumCoords && i < 32; ++i) {
+      aDiagCoords[i][0] = worldCoords[i].fX;
+      aDiagCoords[i][1] = worldCoords[i].fY;
+      aDiagCoords[i][2] = worldCoords[i].fZ;
+    }
+    game_render_vr_diag_building_coords(iBuildingIdx, (const float (*)[3])aDiagCoords, byNumCoords);
+  }
   for (i = 0; byNumCoords > i; ++i) {
     // Bit-exact mirror of legacy view-space transform: subtract viewer in
     // double, floor, matrix-multiply, integer-truncate.
@@ -804,6 +814,7 @@ void DrawBuilding(int iBuildingIdx, uint8 *pScrPtr)
     ++iPolygonLoop;
   }
   qsort(BuildingZOrder, byNumPols, 0xCu, bldZcmp);// Sort polygons by Z-depth using qsort
+  uint64 ullDiagVisited = 0;                    // VR diag: plan polygons the group loop reached
   for (j = 0; byNumPols > j; ++j) {
     iZOrderLoop = 0;
     iFoundPolygonLink = -1;
@@ -831,6 +842,7 @@ void DrawBuilding(int iBuildingIdx, uint8 *pScrPtr)
         BuildingZOrder[iCurrentZOrderIdx].iPolygonLink = -1;
         pPolygon = &BuildingPlans[uiBuildingType].pPols[iPolygonIndex];
         uiTex = pPolygon->uiTex;
+        int iDiagReason = GAME_RENDER_VR_BLD_OTHER;
         // Backface culling — render only if polygon faces camera, or if
         // SURFACE_FLAG_FLIP_BACKFACE forces it visible from both sides. Mirrors
         // the legacy (d1 × d2) · V0 test using int-truncated view-space coords.
@@ -853,14 +865,17 @@ void DrawBuilding(int iBuildingIdx, uint8 *pScrPtr)
                             + (fDx02 * fDy13 - fDy02 * fDx13) * fZ0;
           int isBackFace = (fNormalDot >= 0.0);
           if (isBackFace && (uiTex & SURFACE_FLAG_FLIP_BACKFACE) == 0) {
+            iDiagReason = GAME_RENDER_VR_BLD_BACKFACE;
             goto skip_polygon;
           }
 
           // Sum per-vertex clip flags; skip if entire poly is behind near plane.
           int iProjectedSum = screenClipped[iV0] + screenClipped[iV1]
                             + screenClipped[iV2] + screenClipped[iV3];
-          if (iProjectedSum >= 4)
+          if (iProjectedSum >= 4) {
+            iDiagReason = GAME_RENDER_VR_BLD_NEAR;
             goto skip_polygon;
+          }
 
           // Texture selection and canonical identity are shared with the
           // camera-independent scenery traversal; only the winding below is a
@@ -899,13 +914,36 @@ void DrawBuilding(int iBuildingIdx, uint8 *pScrPtr)
           }
           drawtrk3_emit_surface_to_renderer(
             g_pGameRenderer, verts, &SurfaceInfo);
+          iDiagReason = GAME_RENDER_VR_BLD_DRAWN;
         }
         skip_polygon:;
+        {
+          float aDiagPoly[4][3];
+          for (int vi = 0; vi < 4; vi++) {
+            const tVec3 *wc = &worldCoords[pPolygon->verts[vi]];
+            aDiagPoly[vi][0] = wc->fX; aDiagPoly[vi][1] = wc->fY; aDiagPoly[vi][2] = wc->fZ;
+          }
+          game_render_vr_diag_building_poly(iBuildingIdx, iPolygonIndex,
+                                            (const float (*)[3])aDiagPoly, iDiagReason);
+          if (iPolygonIndex < 64) ullDiagVisited |= (uint64)1 << iPolygonIndex;
+        }
         iZOrderOffset = iCurrentZOrderIdx * 12 + 12;
         ++iCurrentZOrderIdx;
         ++iBestZOrderIdx;
       } while (byNumPols > iBestZOrderIdx && iFoundPolygonLink == *(int *)((char *)&BuildingZOrder[0].iPolygonLink + iZOrderOffset));
     }
+  }
+  for (iPolygonLoop = 0; iPolygonLoop < byNumPols && iPolygonLoop < 64; ++iPolygonLoop) {
+    if (ullDiagVisited & ((uint64)1 << iPolygonLoop))
+      continue;
+    const tPolygon *pDiagPol = &BuildingPlans[uiBuildingType].pPols[iPolygonLoop];
+    float aDiagPoly[4][3];
+    for (int vi = 0; vi < 4; vi++) {
+      const tVec3 *wc = &worldCoords[pDiagPol->verts[vi]];
+      aDiagPoly[vi][0] = wc->fX; aDiagPoly[vi][1] = wc->fY; aDiagPoly[vi][2] = wc->fZ;
+    }
+    game_render_vr_diag_building_poly(iBuildingIdx, iPolygonLoop, (const float (*)[3])aDiagPoly,
+                                      GAME_RENDER_VR_BLD_UNVISITED);
   }
   init_animate_ads();                           // Initialize animated advertisements
 }

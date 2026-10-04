@@ -17,6 +17,7 @@
 #if defined(ROLLER_VR_BUILD)
 #include "vr_camera_compose.h"  /* vr_eye_view_to_ndc() */
 #endif
+#include "render_queue_3d.h"   /* queue fill/overflow for the building diag */
 
 struct GameRenderer {
     GameRenderMode mode;
@@ -1280,6 +1281,170 @@ void game_render_vr_diag_sprite_take(GameRenderVrDiagSprites *out) {
     memset(&s_vrDiagSpriteAcc, 0, sizeof(s_vrDiagSpriteAcc));
     s_vrDiagSpriteAcc.firstId = -1;
     s_vrDiagSpriteFrame++;
+}
+
+/* VR headset-free test hook: building polygon stability (see game_render.h). */
+#define VR_DIAG_BLD_IDS  256
+#define VR_DIAG_BLD_POLS 64
+#define VR_DIAG_BLD_COORDS 32
+static int      s_vrDiagBldFrame = 1;
+static int      s_vrDiagBldSeen[VR_DIAG_BLD_IDS];        /* frame of the current record */
+static int      s_vrDiagBldPrevSeen[VR_DIAG_BLD_IDS];    /* frame of the previous record */
+static uint64_t s_vrDiagBldEmit[VR_DIAG_BLD_IDS], s_vrDiagBldInView[VR_DIAG_BLD_IDS];
+static uint64_t s_vrDiagBldPrevEmit[VR_DIAG_BLD_IDS], s_vrDiagBldPrevInView[VR_DIAG_BLD_IDS];
+static uint8    s_vrDiagBldReason[VR_DIAG_BLD_IDS][VR_DIAG_BLD_POLS];
+static uint8    s_vrDiagBldPrevReason[VR_DIAG_BLD_IDS][VR_DIAG_BLD_POLS];
+static bool     s_vrDiagBldHasRef[VR_DIAG_BLD_IDS];
+static float    s_vrDiagBldRef[VR_DIAG_BLD_IDS][VR_DIAG_BLD_COORDS][3];
+static GameRenderVrDiagBuildings s_vrDiagBldAcc = { .firstPopId = -1, .firstMissingId = -1 };
+
+/* Conservative clip-volume test of a world polygon against the current eye
+ * MVP: false only if every vertex is outside the same clip plane (left,
+ * right, top, bottom, or behind the eye). */
+static bool vr_diag_world_poly_in_view(const float (*v)[3], int n) {
+    const float *m = s_vrDiagMvp;
+    int outL = 0, outR = 0, outB = 0, outT = 0, outW = 0;
+    for (int k = 0; k < n; k++) {
+        float cx = m[0] * v[k][0] + m[4] * v[k][1] + m[8]  * v[k][2] + m[12];
+        float cy = m[1] * v[k][0] + m[5] * v[k][1] + m[9]  * v[k][2] + m[13];
+        float cw = m[3] * v[k][0] + m[7] * v[k][1] + m[11] * v[k][2] + m[15];
+        if (cw <= 0.0f) { outW++; continue; }
+        if (cx < -cw) outL++;
+        if (cx >  cw) outR++;
+        if (cy < -cw) outB++;
+        if (cy >  cw) outT++;
+    }
+    return !(outW == n || outL == n || outR == n || outB == n || outT == n);
+}
+
+static void vr_diag_bld_begin(int id) {
+    if (s_vrDiagBldSeen[id] == s_vrDiagBldFrame) return;
+    s_vrDiagBldPrevSeen[id] = s_vrDiagBldSeen[id];
+    s_vrDiagBldPrevEmit[id] = s_vrDiagBldEmit[id];
+    s_vrDiagBldPrevInView[id] = s_vrDiagBldInView[id];
+    memcpy(s_vrDiagBldPrevReason[id], s_vrDiagBldReason[id], sizeof(s_vrDiagBldPrevReason[id]));
+    s_vrDiagBldSeen[id] = s_vrDiagBldFrame;
+    s_vrDiagBldEmit[id] = 0;
+    s_vrDiagBldInView[id] = 0;
+    memset(s_vrDiagBldReason[id], 0xFF, sizeof(s_vrDiagBldReason[id]));
+    s_vrDiagBldAcc.nBuildings++;
+}
+
+void game_render_vr_diag_building_coords(int id, const float (*coords)[3], int n) {
+    GameRenderVrDiagBuildings *a = &s_vrDiagBldAcc;
+    if (!s_vrSkyActive || !s_vrDiagSpriteRecord) return;
+    if (id < 0 || id >= VR_DIAG_BLD_IDS || n <= 0) return;
+    if (n > VR_DIAG_BLD_COORDS) n = VR_DIAG_BLD_COORDS;
+    vr_diag_bld_begin(id);
+    if (!s_vrDiagBldHasRef[id]) {
+        memcpy(s_vrDiagBldRef[id], coords, sizeof(float) * 3 * (size_t)n);
+        s_vrDiagBldHasRef[id] = true;
+        return;
+    }
+    for (int k = 0; k < n; k++) {
+        float dx = coords[k][0] - s_vrDiagBldRef[id][k][0];
+        float dy = coords[k][1] - s_vrDiagBldRef[id][k][1];
+        float dz = coords[k][2] - s_vrDiagBldRef[id][k][2];
+        float mv = sqrtf(dx * dx + dy * dy + dz * dz);
+        if (mv > a->maxWorldMove) a->maxWorldMove = mv;
+        float ax, ay, bx, by;
+        if (vr_diag_true_ndc(coords[k][0], coords[k][1], coords[k][2], &ax, &ay)
+            && fabsf(ax) <= 1.0f && fabsf(ay) <= 1.0f
+            && vr_diag_true_ndc(s_vrDiagBldRef[id][k][0], s_vrDiagBldRef[id][k][1],
+                                s_vrDiagBldRef[id][k][2], &bx, &by)) {
+            float d = sqrtf((ax - bx) * (ax - bx) + (ay - by) * (ay - by));
+            if (d > a->maxNdcDrift) a->maxNdcDrift = d;
+        }
+    }
+}
+
+void game_render_vr_diag_building_poly(int id, int polyIdx, const float v[4][3], int reason) {
+    GameRenderVrDiagBuildings *a = &s_vrDiagBldAcc;
+    if (!s_vrSkyActive || !s_vrDiagSpriteRecord) return;
+    if (id < 0 || id >= VR_DIAG_BLD_IDS || polyIdx < 0 || polyIdx >= VR_DIAG_BLD_POLS) return;
+    if (reason < 0 || reason > 4) reason = GAME_RENDER_VR_BLD_OTHER;
+    vr_diag_bld_begin(id);
+    uint64_t bit = (uint64_t)1 << polyIdx;
+    bool inView = vr_diag_world_poly_in_view(v, 4);
+    {
+        /* ROLLER_VR_BLD_DIAG_ID=<id>: log every polygon decision for one building. */
+        static int s_logId = -2;
+        if (s_logId == -2) {
+            const char *env = SDL_getenv("ROLLER_VR_BLD_DIAG_ID");
+            s_logId = env ? SDL_atoi(env) : -1;
+        }
+        bool straddle = false;
+        if (s_logId == 9999 && inView) {
+            const float *mm = s_vrDiagMvp;
+            for (int k = 0; k < 4; k++)
+                if (mm[3] * v[k][0] + mm[7] * v[k][1] + mm[11] * v[k][2] + mm[15] < 80.0f) straddle = true;
+        }
+        if (id == s_logId || straddle) {
+            const float *m = s_vrDiagMvp;
+            float w[4];
+            for (int k = 0; k < 4; k++)
+                w[k] = m[3] * v[k][0] + m[7] * v[k][1] + m[11] * v[k][2] + m[15];
+            SDL_Log("bld poly frame=%d id=%d poly=%d reason=%d inView=%d eyeDepth=(%.1f,%.1f,%.1f,%.1f)",
+                    s_vrDiagBldFrame, id, polyIdx, reason, (int)inView,
+                    (double)w[0], (double)w[1], (double)w[2], (double)w[3]);
+        }
+    }
+    a->nPolys++;
+    s_vrDiagBldReason[id][polyIdx] = (uint8)reason;
+    if (reason == GAME_RENDER_VR_BLD_DRAWN) { s_vrDiagBldEmit[id] |= bit; a->nPolysDrawn++; }
+    if (inView) {
+        s_vrDiagBldInView[id] |= bit;
+        a->nPolysInView++;
+        if (reason != GAME_RENDER_VR_BLD_DRAWN) a->nDroppedInView[reason]++;
+    }
+}
+
+void game_render_vr_diag_building_check_selected(int id, const float box[8][3]) {
+    GameRenderVrDiagBuildings *a = &s_vrDiagBldAcc;
+    if (!s_vrSkyActive || !s_vrDiagSpriteRecord) return;
+    if (id < 0 || id >= VR_DIAG_BLD_IDS) return;
+    if (s_vrDiagBldSeen[id] == s_vrDiagBldFrame) return;  /* DrawBuilding() saw it */
+    if (!vr_diag_world_poly_in_view(box, 8)) return;
+    if (a->nSelectedMissing == 0) a->firstMissingId = id;
+    a->nSelectedMissing++;
+}
+
+void game_render_vr_diag_buildings_take(GameRenderVrDiagBuildings *out) {
+    GameRenderVrDiagBuildings *a = &s_vrDiagBldAcc;
+    for (int id = 0; id < VR_DIAG_BLD_IDS; id++) {
+        if (s_vrDiagBldSeen[id] != s_vrDiagBldFrame) continue;
+        if (s_vrDiagBldInView[id]) a->nBuildingsInView++;
+        if (s_vrDiagBldPrevSeen[id] != s_vrDiagBldFrame - 1) continue;
+        uint64_t both = s_vrDiagBldInView[id] & s_vrDiagBldPrevInView[id];
+        uint64_t flip = (s_vrDiagBldEmit[id] ^ s_vrDiagBldPrevEmit[id]) & both;
+        for (int p = 0; p < VR_DIAG_BLD_POLS; p++) {
+            uint64_t bit = (uint64_t)1 << p;
+            if (both & bit) a->nAdjPolys++;
+            if (!(flip & bit)) continue;
+            uint8 r = (s_vrDiagBldEmit[id] & bit) ? s_vrDiagBldPrevReason[id][p] : s_vrDiagBldReason[id][p];
+            a->nFlips[r <= 4 ? r : 3]++;
+        }
+        if (s_vrDiagBldInView[id] && s_vrDiagBldPrevInView[id]
+            && ((s_vrDiagBldEmit[id] & s_vrDiagBldInView[id]) == 0)
+               != ((s_vrDiagBldPrevEmit[id] & s_vrDiagBldPrevInView[id]) == 0)) {
+            if (a->nBuildingPops == 0) a->firstPopId = id;
+            a->nBuildingPops++;
+        }
+    }
+    {
+        RenderQueue3D *q = render_queue_3d_global();
+        a->queueCount = q ? render_queue_3d_count(q) : 0;
+        a->queueOverflowed = q ? render_queue_3d_overflowed(q) : 0;
+    }
+    if (out) *out = *a;
+    memset(a, 0, sizeof(*a));
+    a->firstPopId = -1;
+    a->firstMissingId = -1;
+    s_vrDiagBldFrame++;
+}
+
+void game_render_vr_diag_buildings_reset(void) {
+    memset(s_vrDiagBldHasRef, 0, sizeof(s_vrDiagBldHasRef));
 }
 
 void game_render_draw_sky(GameRenderer *renderer,
