@@ -694,9 +694,20 @@ static void vr_end_session_cleanly(void)
  * the --vr-frames N bounded-run option (g_iVRMaxFrames) and progress logging. */
 static int s_vr_frames_presented = 0;
 static int s_vr_empty_frames = 0;   /* ticks submitted with layerCount = 0 */
+/* Run-length logging of consecutive empty ticks (menus, loading, shouldRender
+ * false): one line when a run starts, a progress line about every
+ * VR_EMPTY_RUN_PROGRESS_MS during it, and one line when the next rendered
+ * frame ends it. Keeps long stretches without frames from looking like a hang. */
+#define VR_EMPTY_RUN_PROGRESS_MS 5000
+static int s_vr_empty_run_ticks = 0;          /* 0 = not inside a run */
+static Uint64 s_vr_empty_run_start_ms = 0;
+static Uint64 s_vr_empty_run_last_progress_ms = 0;
 
 void vr_shutdown(void)
 {
+    if (s_vr_empty_run_ticks > 0)
+        vr_log_line("INFO", "empty run still open at shutdown: %d ticks in %.1f s",
+                    s_vr_empty_run_ticks, (double)(SDL_GetTicks() - s_vr_empty_run_start_ms) / 1000.0);
     vr_log_line("INFO", "shutdown (frames with layer=%d, empty frames=%d)",
                 s_vr_frames_presented, s_vr_empty_frames);
     /* s_gpu is the game's own shared GPU device (see vr_init()'s comment
@@ -1197,6 +1208,14 @@ bool vr_run_frame(void)
     }
 
     if (s_frame_view_count_for_layer > 0) {
+        if (s_vr_empty_run_ticks > 0) {
+            Uint64 run_ms = SDL_GetTicks() - s_vr_empty_run_start_ms;
+            vr_log_line("INFO", "empty run ended: %d ticks in %.1f s (frontend state=%d, racing=%d, "
+                                "next presented frame=%d)",
+                        s_vr_empty_run_ticks, (double)run_ms / 1000.0,
+                        (int)eFrontendCurrentState, (int)racing, s_vr_frames_presented + 1);
+            s_vr_empty_run_ticks = 0;
+        }
         s_vr_frames_presented++;
         if (s_vr_frames_presented == 1 || s_vr_frames_presented % 60 == 0) {
             /* Draw counts are the last eye's queued/merged totals for this
@@ -1240,11 +1259,23 @@ bool vr_run_frame(void)
         }
     } else {
         s_vr_empty_frames++;
-        if (s_vr_empty_frames <= 10)
-            vr_log_line("INFO", "tick submitted with layerCount=0 (empty #%d, after %d presented frames, "
-                                "shouldRender=%d, frontend state=%d, racing=%d)",
-                        s_vr_empty_frames, s_vr_frames_presented, (int)s_frame_state.shouldRender,
+        Uint64 now_ms = SDL_GetTicks();
+        if (s_vr_empty_run_ticks == 0) {
+            s_vr_empty_run_start_ms = now_ms;
+            s_vr_empty_run_last_progress_ms = now_ms;
+            vr_log_line("INFO", "empty run started: ticks submitted with layerCount=0 (after %d presented "
+                                "frames, shouldRender=%d, frontend state=%d, racing=%d)",
+                        s_vr_frames_presented, (int)s_frame_state.shouldRender,
                         (int)eFrontendCurrentState, (int)racing);
+        }
+        s_vr_empty_run_ticks++;
+        if (now_ms - s_vr_empty_run_last_progress_ms >= VR_EMPTY_RUN_PROGRESS_MS) {
+            s_vr_empty_run_last_progress_ms = now_ms;
+            vr_log_line("INFO", "empty run continuing: %d ticks, %.1f s so far (shouldRender=%d, "
+                                "frontend state=%d, racing=%d)",
+                        s_vr_empty_run_ticks, (double)(now_ms - s_vr_empty_run_start_ms) / 1000.0,
+                        (int)s_frame_state.shouldRender, (int)eFrontendCurrentState, (int)racing);
+        }
     }
 
     return keep_running;
