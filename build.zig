@@ -294,6 +294,7 @@ pub fn build(b: *std.Build) void {
                 "PROJECTS/ROLLER/vr_session_fsm.c",
                 "PROJECTS/ROLLER/vr_input_map.c",
                 "PROJECTS/ROLLER/vr_input_pad.c",
+                "PROJECTS/ROLLER/vr_ini_merge.c",
             },
         });
 
@@ -969,6 +970,7 @@ fn configureRenderQueue3DTests(
     vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_effect_projection_test", "tests/vr_effect_projection_test.c", "PROJECTS/ROLLER/vr_camera_compose.c"));
     vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_billboard_yaw_test", "tests/vr_billboard_yaw_test.c", "PROJECTS/ROLLER/vr_camera_compose.c"));
     vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_input_map_test", "tests/vr_input_map_test.c", "PROJECTS/ROLLER/vr_input_map.c"));
+    vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_ini_merge_test", "tests/vr_ini_merge_test.c", "PROJECTS/ROLLER/vr_ini_merge.c"));
 
     const test_step = b.step("test", "Run focused unit tests and optional seam checks");
     test_step.dependOn(render_queue_tests);
