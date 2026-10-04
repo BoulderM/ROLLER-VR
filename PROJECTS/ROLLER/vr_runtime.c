@@ -1184,6 +1184,18 @@ bool vr_run_frame(void)
         return false;
     }
 
+    /* Frontend state changes (menu -> loading -> title -> racing ...), so a
+     * log alone shows where the game is while the headset shows nothing. */
+    {
+        static int s_last_logged_state = -1;
+        if ((int)eFrontendCurrentState != s_last_logged_state) {
+            vr_log_line("INFO", "frontend state %d -> %d (racing=%d, presented frames=%d)",
+                        s_last_logged_state, (int)eFrontendCurrentState, (int)racing,
+                        s_vr_frames_presented);
+            s_last_logged_state = (int)eFrontendCurrentState;
+        }
+    }
+
     XrCompositionLayerProjection projection_layer = {
         .type = XR_TYPE_COMPOSITION_LAYER_PROJECTION,
         .space = s_local_space,
@@ -1238,6 +1250,16 @@ bool vr_run_frame(void)
                         TrackSize, numcars, NumVisibleBuildings, drawCmdCount, vertexCount, cpuFrameMs,
                         s_diag_chunks_beyond_far, s_diag_chunks_in_front, (double)s_diag_max_chunk_depth,
                         s_diag_effects);
+        }
+        /* --vr-menu: the player's own car, so a log shows a human-driven race
+         * actually moving (the line above is the head pose, not the car). */
+        if (g_bVRMenuMode && (s_vr_frames_presented == 1 || s_vr_frames_presented % 60 == 0)) {
+            const tCar *pPlayer = &Car[player1_car];
+            vr_log_line("INFO", "frame %d player car %d pos=(%.1f,%.1f,%.1f) speed=%.2f "
+                                "frontend state=%d racing=%d",
+                        s_vr_frames_presented, player1_car,
+                        (double)pPlayer->pos.fX, (double)pPlayer->pos.fY, (double)pPlayer->pos.fZ,
+                        (double)pPlayer->fFinalSpeed, (int)eFrontendCurrentState, (int)racing);
         }
         /* --vr-frames N: after N frames actually reached the compositor, ask
          * the game to quit through its own shutdown path (same flags the

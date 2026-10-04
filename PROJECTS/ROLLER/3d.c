@@ -639,6 +639,8 @@ static void print_usage(FILE *f, const char *argv0)
   cli_fprintf(f, " --vr-frames N           with --vr: quit cleanly after N stereo frames (default: run until closed)\n");
   cli_fprintf(f, " --vr-meters-to-world V  with --vr: world units per meter (default: derived from the car model)\n");
   cli_fprintf(f, " --vr-fake-head          with --vr: scripted head-pose sweep instead of the headset pose (testing)\n");
+  cli_fprintf(f, " --vr-menu               with --vr: boot to the main menu instead of the intro replay; a small\n"
+                 "                         desktop window takes keyboard focus (menus stay black in the headset)\n");
   cli_fprintf(f, " --vr-eye-dump-dir DIR   with --vr: write each eye's rendered frame to DIR as PNG every 90 frames\n");
   cli_fprintf(f, " --vr-eye-dump-every N   with --vr-eye-dump-dir: dump every N presented frames instead of 90\n");
   cli_fprintf(f, " --vr-eye-dump-from F    with --vr-eye-dump-dir: no dumps before presented frame F\n");
@@ -3084,6 +3086,9 @@ int main(int argc, const char **argv, const char **envp)
     } else if (strcmp(argv[i], "--vr-fake-head") == 0) {
       g_bVRFakeHead = 1;
       consumed = 1;
+    } else if (strcmp(argv[i], "--vr-menu") == 0) {
+      g_bVRMenuMode = 1;
+      consumed = 1;
     } else if (strcmp(argv[i], "--vr-eye-dump-dir") == 0) {
       if (i + 1 < argc) {
         if (SDL_snprintf(g_szVREyeDumpDir, sizeof(g_szVREyeDumpDir), "%s", argv[i + 1]) >= (int)sizeof(g_szVREyeDumpDir)) {
@@ -3195,6 +3200,10 @@ int main(int argc, const char **argv, const char **envp)
 #if defined(ROLLER_VR_BUILD)
   if (g_bVRMode && g_bSnapshotMode) {
     cli_fprintf(stderr, "ERROR: '--vr' cannot be combined with '--snapshot' or '--snapshot-scene'\n");
+    return 1;
+  }
+  if (g_bVRMenuMode && !g_bVRMode) {
+    cli_fprintf(stderr, "ERROR: '--vr-menu' requires '--vr'\n");
     return 1;
   }
 #endif
@@ -3374,6 +3383,14 @@ int main(int argc, const char **argv, const char **envp)
      * InputLoadConfig() above, the only other startup writer of this flag. */
     g_fDrawDistanceFraction = 1.0f;
   }
+  if (g_bVRMenuMode) {
+    /* Player 1's driving keys after FATAL.INI, as PC set-1 scancodes
+     * (0x2C Z, 0x2D X, 0x14 T, 0x21 F, 0x13 R, 0x20 D are the built-in defaults). */
+    SDL_Log("VR menu mode: P1 keys left=0x%02X right=0x%02X accelerate=0x%02X brake=0x%02X "
+            "gear up=0x%02X gear down=0x%02X",
+            userkey[USERKEY_P1LEFT], userkey[USERKEY_P1RIGHT], userkey[USERKEY_P1UP],
+            userkey[USERKEY_P1DOWN], userkey[USERKEY_P1UPGEAR], userkey[USERKEY_P1DOWNGEAR]);
+  }
 #endif
   loadcheatnames();
   cdxinit();
@@ -3460,7 +3477,24 @@ int main(int argc, const char **argv, const char **envp)
   winner_mode = 0;
   intro = -1;
   race_set_track(TrackLoad);                    // Start initial intro replay through the dispatcher.
-  frontend_run_game_loop((g_bSnapshotMode || g_bVRMode) ? eFRONTEND_STATE_RACING : eFRONTEND_STATE_COPYRIGHT);
+  eFrontendState eBootState = (g_bSnapshotMode || g_bVRMode) ? eFRONTEND_STATE_RACING : eFRONTEND_STATE_COPYRIGHT;
+#if defined(ROLLER_VR_BUILD)
+  if (g_bVRMenuMode) {
+    /* --vr-menu: skip the copyright/title screens and the intro replay and go
+     * straight to the main menu, the state the normal game reaches after the
+     * intro (frontend_finish_post_race_sequence() clears intro and picks
+     * eFRONTEND_STATE_MAIN_MENU). frontend_main_menu_setup() clears intro and
+     * replaytype again on entry; intro is cleared here as well so nothing
+     * between here and the menu sees the intro-replay setup above. */
+    intro = 0;
+    /* The skipped copyright/title screens are what normally load the first
+     * palette; frontend_main_menu_setup() blacks out pal_addr before it loads
+     * frontend.pal itself, so it needs one in place (NULL deref otherwise). */
+    setpal("frontend.pal");
+    eBootState = eFRONTEND_STATE_MAIN_MENU;
+  }
+#endif
+  frontend_run_game_loop(eBootState);
   //__asm { int     10h; Reset video mode and exit game }// Reset video mode and exit game
   if (!frontend_shutdown_complete())
     doexit();

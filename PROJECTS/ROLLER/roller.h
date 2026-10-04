@@ -80,6 +80,7 @@ extern float g_fVRMetersToWorldOverride; /* --vr-meters-to-world: overrides the 
                                              default entirely when > 0; <= 0 (default -1) means
                                              "compute from CarBox" */
 extern int g_bVRFakeHead;              /* --vr-fake-head: scripted head-pose sweep instead of xrLocateViews() */
+extern int g_bVRMenuMode;              /* --vr-menu: boot to the main menu, keyboard via a small focus window */
 extern char g_szVREyeDumpDir[260];     /* --vr-eye-dump-dir DIR: in-process PNG dump of each eye, every 90 presented frames */
 extern int g_iVREyeDumpEvery;          /* --vr-eye-dump-every N: dump interval in presented frames (default 90) */
 extern int g_iVREyeDumpFrom;           /* --vr-eye-dump-from F: first presented frame eligible for a dump (default 0) */

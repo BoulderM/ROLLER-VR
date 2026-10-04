@@ -125,6 +125,16 @@ int g_iVRMaxFrames = 0;   /* --vr-frames N: stop after N stereo frames are prese
 char g_szVRTrackPath[260] = { 0 };
 float g_fVRMetersToWorldOverride = -1.0f; /* --vr-meters-to-world: <= 0 = derive from the car model */
 int g_bVRFakeHead = 0;
+int g_bVRMenuMode = 0;
+#if defined(ROLLER_VR_BUILD)
+/* --vr-menu only: a small plain desktop window that is never claimed by the
+ * GPU device, so the window system has something to give keyboard focus to
+ * and SDL delivers key events to the game. Kept separate from s_pWindow on
+ * purpose: s_pWindow == NULL is what keeps UpdateSDLWindow() and the other
+ * flat-screen present paths off in VR mode (ROLLERGpuPresentationSuspended()),
+ * and those would use the swapchain and transfer buffer VR mode never makes. */
+static SDL_Window *s_pVRFocusWindow = NULL;
+#endif
 char g_szVREyeDumpDir[260] = { 0 };
 int g_iVREyeDumpEvery = 90; /* --vr-eye-dump-every N */
 int g_iVREyeDumpFrom = 0;   /* --vr-eye-dump-from F */
@@ -858,6 +868,24 @@ int InitSDL(char *whiplash_root, const char *midi_root)
     SDL_DestroyProperties(gpuProps);
     if (!s_pGPUDevice)
       vr_diag_fatal("Couldn't create the GPU device: %s", SDL_GetError());
+    if (g_bVRMenuMode) {
+      /* Keyboard path for --vr-menu. Not claimed for the GPU device (see
+       * s_pVRFocusWindow's comment); a failure here only costs keyboard input,
+       * so it is logged rather than fatal. */
+      s_pVRFocusWindow = SDL_CreateWindow("ROLLER VR - click here for keyboard focus", 480, 80, 0);
+      if (s_pVRFocusWindow) {
+        SDL_RaiseWindow(s_pVRFocusWindow);
+        SDL_Log("VR menu mode: keyboard focus window created (id %u)",
+                (unsigned)SDL_GetWindowID(s_pVRFocusWindow));
+      } else {
+        SDL_Log("VR menu mode: couldn't create the keyboard focus window: %s", SDL_GetError());
+      }
+      /* Gamepads and joysticks (SDL_INIT_JOYSTICK/GAMEPAD) and the input
+       * bindings, as the flat-screen path does after creating its window.
+       * Keyboard keys themselves reach the game through UpdateSDL()'s
+       * key_handler() translation. */
+      InputInit();
+    }
 #else
     s_pGPUDevice = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, NULL);
     if (!s_pGPUDevice) {
@@ -1762,6 +1790,11 @@ void ShutdownSDL()
     if (s_pWindow)
       SDL_DestroyWindow(s_pWindow);
     s_pWindow = NULL;
+#if defined(ROLLER_VR_BUILD)
+    if (s_pVRFocusWindow)
+      SDL_DestroyWindow(s_pVRFocusWindow);
+    s_pVRFocusWindow = NULL;
+#endif
 #endif
   }
 
@@ -1976,6 +2009,13 @@ void UpdateSDL()
           break;
       }
     }
+#if defined(ROLLER_VR_BUILD)
+    /* --vr-menu: there is no picture of the menu anywhere yet, so record
+     * that keys arrive at all (first press of each key only, no repeats). */
+    if (g_bVRMenuMode && e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat)
+      SDL_Log("VR menu mode: key down %s (scancode %d), frontend state=%d",
+              SDL_GetScancodeName(e.key.scancode), (int)e.key.scancode, (int)eFrontendCurrentState);
+#endif
     if (e.type == SDL_EVENT_KEY_DOWN) {
       if (e.key.scancode == SDL_SCANCODE_GRAVE) {
         debug_overlay_toggle(s_pDebugOverlay);
