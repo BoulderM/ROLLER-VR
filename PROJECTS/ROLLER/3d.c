@@ -3327,8 +3327,8 @@ int main(int argc, const char **argv, const char **envp)
     // probe are all interactive or audio-device-dependent: skip in headless
     // snapshot mode. The replay file is loaded directly from cwd later.
     // VR mode still needs FATDATA/tracks (it loads a real track, unlike
-    // snapshot's fixed replay/scene modes) but skips the audio-device probe
-    // the same way snapshot mode does, for headless operation.
+    // snapshot's fixed replay/scene modes) and runs the CD-track probe in its
+    // own VR-only block below.
 #if !defined(IS_ANDROID)
     InitFATDATA(whiplash_root);
 #endif
