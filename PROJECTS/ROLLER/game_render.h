@@ -389,6 +389,30 @@ void game_render_vr_diag_effect_cut(float wx, float wy, float wz, int reason);
 int  game_render_vr_diag_effect_take(int *outInView, float *outMeanErr, float *outMaxErr,
                                      float outFirst[4], int outCutInView[2]);
 
+/* VR headset-free test hook for scenery billboards (trees, advert balloons:
+ * the building plans that turn to face the viewer). Records, while
+ * _record(true) is set inside a VR eye's draw_road() (vr_runtime.c sets it
+ * for eye 0), each billboard's four world corners as drawn, by building
+ * index. For billboards whose centre is inside the eye's view it measures,
+ * through the eye's own MVP, how far the corners moved on screen against
+ * where the same building's corners were (a) the previous recorded frame
+ * (adjacent drift) and (b) when first recorded since _reset() (cumulative
+ * drift), plus the largest world-space corner displacement since then. In a
+ * frozen world (--vr-freeze-from) a world-fixed object has zero drift
+ * whatever the head does. _take() returns the totals and resets them. */
+typedef struct GameRenderVrDiagSprites {
+    int   n, nInView;
+    int   nAdj;  float sumAdj, maxAdj;   /* adjacent-frame NDC drift */
+    int   nCum;  float sumCum, maxCum;   /* NDC drift since first recorded */
+    float maxWorldMove;                  /* world units, since first recorded */
+    int   firstId;                       /* first in-view billboard, -1 if none */
+    float firstYawDeg, firstCenterNdc[2];
+} GameRenderVrDiagSprites;
+void game_render_vr_diag_sprite_record(bool on);
+void game_render_vr_diag_sprite_reset(void);
+void game_render_vr_diag_sprite(int id, const float corners[4][3], float yawDeg);
+void game_render_vr_diag_sprite_take(GameRenderVrDiagSprites *out);
+
 // Draw — HUD sprites
 void game_render_sprite(GameRenderer *renderer, int slot, int blockIdx,
                         int x, int y, int transparentColorIndex,

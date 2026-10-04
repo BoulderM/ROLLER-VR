@@ -930,6 +930,9 @@ static int   s_diag_effects = 0, s_diag_effects_in_view = 0;
 static float s_diag_effect_mean_err = 0.0f, s_diag_effect_max_err = 0.0f;
 static float s_diag_effect_first[4];
 static int   s_diag_effect_cut_in_view[2];
+/* Scenery billboard anchoring diag (headset-free): eye 0's figures from
+ * game_render_vr_diag_sprite_take() after eye 0's draw_road(). */
+static GameRenderVrDiagSprites s_diag_sprites;
 static int   s_diag_chunks_in_front = 0;
 static int   s_diag_chunks_beyond_far = 0;
 static float s_diag_max_chunk_depth = 0.0f;
@@ -1161,6 +1164,7 @@ bool vr_run_frame(void)
         }
         if (s_diag_effects_in_view >= s_freeze_min_effects) {
             g_bVRTestFreeze = true;
+            game_render_vr_diag_sprite_reset(); /* billboard drift is measured from here */
             vr_log_line("INFO", "test freeze engaged at presented frame %d (eye0 effects in view last frame=%d)",
                         s_vr_frames_presented, s_diag_effects_in_view);
         }
@@ -1455,8 +1459,11 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
          * renderer instances. The VR-eye override set above is now active
          * BEFORE any of this call's cars are queued. */
         game_render_vr_diag_effect_take(NULL, NULL, NULL, NULL, NULL); /* drop anything from outside this eye */
+        game_render_vr_diag_sprite_record(i == 0);
         draw_road(pMainScrPtr, uiViewType, iDriveView, -1, 0);
+        game_render_vr_diag_sprite_record(false);
         if (i == 0) {
+            game_render_vr_diag_sprite_take(&s_diag_sprites);
             vr_diag_far_plane_chunks(); /* camera globals still hold eye 0's composed camera */
             s_diag_effects = game_render_vr_diag_effect_take(&s_diag_effects_in_view,
                                                              &s_diag_effect_mean_err,
@@ -1582,6 +1589,20 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
                                 (double)s_diag_effect_first[0], (double)s_diag_effect_first[1],
                                 (double)s_diag_effect_first[2], (double)s_diag_effect_first[3],
                                 VIEWDIST, xbase, ybase, scr_size, winw, winh);
+                if (i == 0)
+                    vr_log_line("INFO", "sprite diag frame %d eye0: billboards=%d inView=%d "
+                                        "adjDriftNdc n=%d mean=%.4f max=%.4f cumDriftNdc n=%d mean=%.4f max=%.4f "
+                                        "maxWorldMove=%.1f first id=%d yaw=%.2f centerNdc=(%.4f,%.4f) worlddirn=%d",
+                                s_vr_frames_presented, s_diag_sprites.n, s_diag_sprites.nInView,
+                                s_diag_sprites.nAdj,
+                                (double)(s_diag_sprites.nAdj ? s_diag_sprites.sumAdj / (float)s_diag_sprites.nAdj : 0.0f),
+                                (double)s_diag_sprites.maxAdj,
+                                s_diag_sprites.nCum,
+                                (double)(s_diag_sprites.nCum ? s_diag_sprites.sumCum / (float)s_diag_sprites.nCum : 0.0f),
+                                (double)s_diag_sprites.maxCum, (double)s_diag_sprites.maxWorldMove,
+                                s_diag_sprites.firstId, (double)s_diag_sprites.firstYawDeg,
+                                (double)s_diag_sprites.firstCenterNdc[0], (double)s_diag_sprites.firstCenterNdc[1],
+                                worlddirn);
             } else
                 vr_log_line("WARN", "eye PNG dump failed for %s", dump_path);
         }

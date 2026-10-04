@@ -1199,6 +1199,89 @@ int game_render_vr_diag_effect_take(int *outInView, float *outMeanErr, float *ou
     return n;
 }
 
+/* VR headset-free test hook: world anchoring of scenery billboards (see
+ * game_render.h). Per building index: its corners the last recorded frame
+ * and when first recorded since the last reset. */
+#define VR_DIAG_SPRITE_IDS 256
+static bool  s_vrDiagSpriteRecord = false;
+static int   s_vrDiagSpriteFrame = 1;
+static int   s_vrDiagSpriteSeen[VR_DIAG_SPRITE_IDS];      /* frame last recorded, 0 = never */
+static float s_vrDiagSpritePrev[VR_DIAG_SPRITE_IDS][4][3];
+static bool  s_vrDiagSpriteHasRef[VR_DIAG_SPRITE_IDS];
+static float s_vrDiagSpriteRef[VR_DIAG_SPRITE_IDS][4][3];
+static GameRenderVrDiagSprites s_vrDiagSpriteAcc;
+
+void game_render_vr_diag_sprite_record(bool on) {
+    s_vrDiagSpriteRecord = on;
+}
+
+void game_render_vr_diag_sprite_reset(void) {
+    memset(s_vrDiagSpriteSeen, 0, sizeof(s_vrDiagSpriteSeen));
+    memset(s_vrDiagSpriteHasRef, 0, sizeof(s_vrDiagSpriteHasRef));
+}
+
+/* Largest NDC distance, over the four corners, between where the current eye
+ * MVP puts a[k] and b[k]; false if any corner is behind the eye. */
+static bool vr_diag_corner_ndc_dist(const float a[4][3], const float b[4][3], float *outDist) {
+    float d = 0.0f;
+    for (int k = 0; k < 4; k++) {
+        float ax, ay, bx, by;
+        if (!vr_diag_true_ndc(a[k][0], a[k][1], a[k][2], &ax, &ay)) return false;
+        if (!vr_diag_true_ndc(b[k][0], b[k][1], b[k][2], &bx, &by)) return false;
+        float e = sqrtf((ax - bx) * (ax - bx) + (ay - by) * (ay - by));
+        if (e > d) d = e;
+    }
+    *outDist = d;
+    return true;
+}
+
+void game_render_vr_diag_sprite(int id, const float corners[4][3], float yawDeg) {
+    GameRenderVrDiagSprites *a = &s_vrDiagSpriteAcc;
+    if (!s_vrSkyActive || !s_vrDiagSpriteRecord) return;  /* eye 0 of a VR eye's draw_road() only */
+    if (id < 0 || id >= VR_DIAG_SPRITE_IDS) return;
+    a->n++;
+    float cx = 0.0f, cy = 0.0f, cz = 0.0f, tx, ty;
+    for (int k = 0; k < 4; k++) { cx += corners[k][0] * 0.25f; cy += corners[k][1] * 0.25f; cz += corners[k][2] * 0.25f; }
+    bool inView = vr_diag_true_ndc(cx, cy, cz, &tx, &ty) && fabsf(tx) <= 1.0f && fabsf(ty) <= 1.0f;
+    if (inView) {
+        if (a->nInView == 0) {
+            a->firstId = id; a->firstYawDeg = yawDeg;
+            a->firstCenterNdc[0] = tx; a->firstCenterNdc[1] = ty;
+        }
+        a->nInView++;
+        float d;
+        if (s_vrDiagSpriteSeen[id] == s_vrDiagSpriteFrame - 1
+            && vr_diag_corner_ndc_dist(corners, (const float (*)[3])s_vrDiagSpritePrev[id], &d)) {
+            a->nAdj++; a->sumAdj += d; if (d > a->maxAdj) a->maxAdj = d;
+        }
+        if (s_vrDiagSpriteHasRef[id]
+            && vr_diag_corner_ndc_dist(corners, (const float (*)[3])s_vrDiagSpriteRef[id], &d)) {
+            a->nCum++; a->sumCum += d; if (d > a->maxCum) a->maxCum = d;
+        }
+    }
+    if (s_vrDiagSpriteHasRef[id]) {
+        for (int k = 0; k < 4; k++) {
+            float dx = corners[k][0] - s_vrDiagSpriteRef[id][k][0];
+            float dy = corners[k][1] - s_vrDiagSpriteRef[id][k][1];
+            float dz = corners[k][2] - s_vrDiagSpriteRef[id][k][2];
+            float m = sqrtf(dx * dx + dy * dy + dz * dz);
+            if (m > a->maxWorldMove) a->maxWorldMove = m;
+        }
+    } else {
+        memcpy(s_vrDiagSpriteRef[id], corners, sizeof(s_vrDiagSpriteRef[id]));
+        s_vrDiagSpriteHasRef[id] = true;
+    }
+    memcpy(s_vrDiagSpritePrev[id], corners, sizeof(s_vrDiagSpritePrev[id]));
+    s_vrDiagSpriteSeen[id] = s_vrDiagSpriteFrame;
+}
+
+void game_render_vr_diag_sprite_take(GameRenderVrDiagSprites *out) {
+    if (out) *out = s_vrDiagSpriteAcc;
+    memset(&s_vrDiagSpriteAcc, 0, sizeof(s_vrDiagSpriteAcc));
+    s_vrDiagSpriteAcc.firstId = -1;
+    s_vrDiagSpriteFrame++;
+}
+
 void game_render_draw_sky(GameRenderer *renderer,
                           const GameRenderCamera *camera,
                           const GameRenderProjection *projection) {

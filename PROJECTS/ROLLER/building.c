@@ -50,6 +50,15 @@ bool building_type_is_billboard(unsigned int uiBuildingType)
 }
 
 //-------------------------------------------------------------------------------------------------
+// The yaw, in degrees, a billboard plan (building_type_is_billboard()) is
+// turned to when drawn: the camera's heading, worlddirn.
+static float billboard_render_yaw_deg(int iBuildingIdx)
+{
+  (void)iBuildingIdx;
+  return (float)(360 * worlddirn / 0x3FFF);
+}
+
+//-------------------------------------------------------------------------------------------------
 // Rotates the plan's coordinate list by the building's angles and translates it
 // onto the placed origin InitBuildings computed at load time. Every input but
 // the billboard yaw comes from the track file, so BUILDING_YAW_AUTHORED makes
@@ -89,7 +98,7 @@ uint32 building_transform_plan_coords(int iBuildingIdx,
 
   if (eYawSource == BUILDING_YAW_RENDER
       && building_type_is_billboard(uiBuildingType))// Buildings 9, 10, and 15 turn to face the world direction
-    fYawAngle = (float)(360 * worlddirn / 0x3FFF);
+    fYawAngle = billboard_render_yaw_deg(iBuildingIdx);
   else
     fYawAngle = BuildingAngles[3 * iBuildingIdx];
   fPitchAngle = BuildingAngles[3 * iBuildingIdx + 1];
@@ -685,6 +694,18 @@ void DrawBuilding(int iBuildingIdx, uint8 *pScrPtr)
     iBuildingIdx, BUILDING_YAW_RENDER, worldCoords);
   if (byNumCoords == 0)                         // Plan index out of range: nothing placed
     return;
+  // VR headset-free test hook: record where this billboard was placed (does
+  // nothing outside eye 0 of a VR eye's draw_road(), see game_render.h).
+  if (byNumCoords == 4 && building_type_is_billboard(uiBuildingType)) {
+    float aCorners[4][3];
+    for (i = 0; i < 4; ++i) {
+      aCorners[i][0] = worldCoords[i].fX;
+      aCorners[i][1] = worldCoords[i].fY;
+      aCorners[i][2] = worldCoords[i].fZ;
+    }
+    game_render_vr_diag_sprite(iBuildingIdx, (const float (*)[3])aCorners,
+                               billboard_render_yaw_deg(iBuildingIdx));
+  }
   for (i = 0; byNumCoords > i; ++i) {
     // Bit-exact mirror of legacy view-space transform: subtract viewer in
     // double, floor, matrix-multiply, integer-truncate.
