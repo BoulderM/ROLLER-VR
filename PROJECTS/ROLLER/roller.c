@@ -2,6 +2,7 @@
 #if defined(ROLLER_VR_BUILD)
 #include "vr_diag.h"
 #include "vr_runtime.h"
+#include "vr_input_pad.h"
 #endif
 #include "scene_render_gpu.h"
 #include "crt_filter.h"
@@ -134,6 +135,8 @@ int g_bVRMenuMode = 0;
  * flat-screen present paths off in VR mode (ROLLERGpuPresentationSuspended()),
  * and those would use the swapchain and transfer buffer VR mode never makes. */
 static SDL_Window *s_pVRFocusWindow = NULL;
+int g_bVRDemoMode = 0;  /* --vr-demo: the attract-mode demo instead of the menu (no input) */
+int g_bVRFakeInput = 0; /* --vr-fake-input (Task 6) */
 #endif
 char g_szVREyeDumpDir[260] = { 0 };
 int g_iVREyeDumpEvery = 90; /* --vr-eye-dump-every N */
@@ -951,6 +954,24 @@ int InitSDL(char *whiplash_root, const char *midi_root)
        * menu_render_* call is a no-op. Its end_frame calls UpdateSDLWindow(),
        * which mirrors scrbuf into the focus window (VRMirrorMenuFrame()). */
       s_pMenuRenderer = menu_render_create(NULL, NULL);
+      /* Joystick input must keep flowing while SteamVR (not the focus window) has
+       * the desktop focus: SDL otherwise drops it whenever a window exists and none
+       * has keyboard focus (SDL_PrivateJoystickShouldIgnoreEvent). Covers physical
+       * pads and wheels and the VR controller pad alike. */
+      SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+#if defined(_WIN32)
+      /* The flat path reads ROLLER.INI's WindowsInputBackend before any joystick
+       * init (below, after the VR branch); do the same here so the pad attach
+       * starts SDL's joystick driver with the backend the game will use. */
+      InputLoadStartupConfig();
+      bool bVRPadDirectInput = InputGetWindowsBackend() == INPUT_WINDOWS_BACKEND_SDL_DINPUT;
+#else
+      bool bVRPadDirectInput = false; /* the hint is Windows-only */
+#endif
+      /* The VR controller pad, attached before InputInit() so the first device
+       * scan already includes it. */
+      if (!vr_input_pad_attach(bVRPadDirectInput))
+        SDL_Log("VR input: no VR controller pad; Frame controllers will not reach the game");
       /* Gamepads and joysticks (SDL_INIT_JOYSTICK/GAMEPAD) and the input
        * bindings, as the flat-screen path does after creating its window.
        * Keyboard keys themselves reach the game through UpdateSDL()'s
@@ -1862,6 +1883,9 @@ void ShutdownSDL()
       SDL_DestroyWindow(s_pWindow);
     s_pWindow = NULL;
 #if defined(ROLLER_VR_BUILD)
+    /* After InputShutdown() (above) has closed the game's handles, and before
+     * SDL_Quit() (vr_input_pad.h's lifetime precondition). No-op when unattached. */
+    vr_input_pad_detach();
     if (s_pVRFocusWindow)
       SDL_DestroyWindow(s_pVRFocusWindow);
     s_pVRFocusWindow = NULL;
