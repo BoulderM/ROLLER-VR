@@ -843,6 +843,59 @@ static void RaiseFileDescriptorLimit(void)
 
 //-------------------------------------------------------------------------------------------------
 
+#if defined(ROLLER_VR_BUILD)
+/* Audio for VR mode. InitSDL()'s VR branch returns before the windowed path's
+ * MIDI init, and SDL_Init() above leaves SDL_INIT_AUDIO out in VR mode, so both
+ * happen here instead. Called after vr_diag_init(), so failures land in
+ * roller-vr.log, and before InitSDL() returns, because main() calls initmusic()
+ * and readsoundconfig() right after, as on the windowed path. A missing audio
+ * device is not fatal (the windowed path's ErrorBoxExit would block a headset
+ * run). The MIDI part copies the windowed path below; keep the two in step. */
+static void ROLLERVRInitAudio(const char *midi_root)
+{
+  if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+    SDL_Log("VR audio: SDL_INIT_AUDIO failed (%s); continuing without sound", SDL_GetError());
+    return;
+  }
+  {
+    SDL_AudioSpec spec;
+    int iFrames = 0;
+    if (SDL_GetAudioDeviceFormat(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, &iFrames))
+      SDL_Log("VR audio: driver %s, default playback %s %d ch %d Hz (%d frames)",
+              SDL_GetCurrentAudioDriver(), SDL_GetAudioFormatName(spec.format),
+              spec.channels, spec.freq, iFrames);
+  }
+
+  char localMidiPath[256];
+  if (midi_root) {
+    SDL_strlcpy(localMidiPath, midi_root, sizeof(localMidiPath));
+  } else {
+    midi_root = SDL_GetBasePath();
+    if (midi_root) {
+      SDL_strlcpy(localMidiPath, midi_root, sizeof(localMidiPath));
+    } else {
+      SDL_strlcpy(localMidiPath, "./", sizeof(localMidiPath));
+    }
+  }
+  size_t lenMidiPath = strlen(localMidiPath);
+  if (lenMidiPath > 0 &&
+      localMidiPath[lenMidiPath - 1] != '/' &&
+      localMidiPath[lenMidiPath - 1] != '\\') {
+    SDL_strlcat(localMidiPath, "/", sizeof(localMidiPath));
+  }
+  SDL_strlcat(localMidiPath, "midi/wildmidi.cfg", sizeof(localMidiPath));
+  if (!MIDI_Init(localMidiPath)) {
+    SDL_Log("Failed to initialize WildMidi. Please check your configuration file '%s'.", localMidiPath);
+  }
+  if (!MIDI_OS_Init()) {
+    SDL_Log("Failed to initialize OS MIDI (rtmidi).");
+  }
+  if (!MIDI_OPL_Init()) {
+    SDL_Log("Failed to initialize OPL3 MIDI (libADLMIDI).");
+  }
+}
+
+#endif
 int InitSDL(char *whiplash_root, const char *midi_root)
 {
   RaiseFileDescriptorLimit();
@@ -936,6 +989,7 @@ int InitSDL(char *whiplash_root, const char *midi_root)
     SDL_DestroyProperties(gpuProps);
     if (!s_pGPUDevice)
       vr_diag_fatal("Couldn't create the GPU device: %s", SDL_GetError());
+    ROLLERVRInitAudio(midi_root);
     if (g_bVRMenuMode) {
       /* Keyboard path for --vr-menu. Not claimed for the GPU device (see
        * s_pVRFocusWindow's comment); a failure here only costs keyboard input,

@@ -3336,6 +3336,10 @@ int main(int argc, const char **argv, const char **envp)
     InitTRACKS(whiplash_root);
     if (!g_bVRMode)
       ROLLERGetAudioInfo();
+#if defined(ROLLER_VR_BUILD)
+    if (g_bVRMode)
+      ROLLERGetAudioInfo(); /* CD / ripped-track probe (audio/trackNN.wav), as in the windowed path */
+#endif
   }
 
   ROLLERCommsSetCommandBase(0x686C6361u);          // Initialize communication system with base command
@@ -3409,6 +3413,8 @@ int main(int argc, const char **argv, const char **envp)
      * on it for free, confirmed by reading both). Must run AFTER
      * InputLoadConfig() above, the only other startup writer of this flag. */
     g_fDrawDistanceFraction = 1.0f;
+    SDL_Log("VR audio: soundon=%d musicon=%d SoundCard=%d MusicCard=%d MusicCD=%d MusicOS=%d MusicOPL=%d",
+            soundon, musicon, SoundCard, MusicCard, MusicCD, MusicOS, MusicOPL);
   }
   if (g_bVRMenuMode) {
     /* Player 1's driving keys after FATAL.INI, as PC set-1 scancodes
