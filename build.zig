@@ -356,6 +356,25 @@ pub fn build(b: *std.Build) void {
                 .name = "vr_vulkan_options_test",
                 .root_module = vk_options_mod,
             }));
+
+            // Virtual gamepad check (Frame controller transport). No GPU or display
+            // needed, so unlike vr_vulkan_options_test it also runs as a build step.
+            const vpad_mod = b.createModule(.{
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            });
+            vpad_mod.addCSourceFiles(.{ .files = &.{"tests/vr_virtual_pad_test.c"}, .flags = c_flags });
+            vpad_mod.addIncludePath(b.path("PROJECTS/ROLLER"));
+            vpad_mod.addIncludePath(sdl_vr.builder.path("include"));
+            vpad_mod.linkLibrary(sdl_vr.artifact("SDL3"));
+            const vpad_exe = b.addExecutable(.{ .name = "vr_virtual_pad_test", .root_module = vpad_mod });
+            b.installArtifact(vpad_exe);
+            const run_vpad = b.addRunArtifact(vpad_exe);
+            run_vpad.setEnvironmentVariable("SDL_VIDEODRIVER", "dummy");
+            run_vpad.setEnvironmentVariable("SDL_AUDIODRIVER", "dummy");
+            const vpad_step = b.step("test-vr-sdl", "Run the SDL virtual-gamepad check (needs -Dvr; no GPU or display)");
+            vpad_step.dependOn(&run_vpad.step);
         }
     }
 
