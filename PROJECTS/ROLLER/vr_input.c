@@ -158,7 +158,8 @@ void vr_input_xr_on_profile_changed(void)
     vr_log_line("INFO", "VR input: safety exit is %s held 2 s", s_has_back ? "Back+Start (View+Menu)" : "Start (Menu)");
 }
 
-static void vr_input_xr_read(VrInputActions *in)
+/* Returns false when nothing was read this frame (not focused, or the sync failed). */
+static bool vr_input_xr_read(VrInputActions *in)
 {
     XrActiveActionSet active = { .actionSet = s_action_set, .subactionPath = XR_NULL_PATH };
     XrActionsSyncInfo sync = { .type = XR_TYPE_ACTIONS_SYNC_INFO, .countActiveActionSets = 1, .activeActionSets = &active };
@@ -169,10 +170,10 @@ static void vr_input_xr_read(VrInputActions *in)
             s_warned = true;
             vr_log_line("WARN", "VR input: xrSyncActions failed (XrResult=%d); controllers read as released", (int)r);
         }
-        return;
+        return false;
     }
     if (r == XR_SESSION_NOT_FOCUSED)
-        return;
+        return false;
     for (int i = 0; i < VR_ACT_COUNT; ++i) {
         XrActionStateGetInfo get = { .type = XR_TYPE_ACTION_STATE_GET_INFO, .action = s_actions[i] };
         switch (vr_input_action_descs[i].kind) {
@@ -196,6 +197,7 @@ static void vr_input_xr_read(VrInputActions *in)
         }
         }
     }
+    return true;
 }
 
 /* Logs button changes, and the axes once a second while any is off rest, so a
@@ -237,11 +239,12 @@ void vr_input_frame(bool session_focused)
     SDL_zero(in);
     bool has_back = s_has_back;
     /* (Task 6 inserts the --vr-fake-input branch here.) */
-    if (s_attached && session_focused)
-        vr_input_xr_read(&in);
+    /* A failed or not-focused read counts as not focused: the pad goes to rest and
+     * no stale or half-read state can complete a gesture. */
+    bool read_ok = s_attached && session_focused && vr_input_xr_read(&in);
 
     VrPadState pad;
-    VrInputEvent ev = vr_input_map_step(&s_map, &in, session_focused, has_back, dt, &pad);
+    VrInputEvent ev = vr_input_map_step(&s_map, &in, read_ok, has_back, dt, &pad);
     vr_input_pad_write(&pad);
     vr_input_log_pad(&pad);
 

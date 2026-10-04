@@ -237,12 +237,17 @@ bool vr_prepare_vulkan(SDL_GPUVulkanOptions *out_options)
     uint32_t enabled_count = 0;
     enabled_extensions[enabled_count++] = s_vk_binding == VR_VK_BINDING_ENABLE_V1
         ? XR_KHR_VULKAN_ENABLE_EXTENSION_NAME : XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME;
-    s_valve_frame_enabled = has_valve_frame;
-    if (has_valve_frame)
+    /* Controller actions exist only under --vr-menu, so the Valve extension is asked for
+     * only there; the plain --vr demo keeps the extension set it had before M3. */
+    bool use_valve_frame = has_valve_frame && g_bVRMenuMode;
+    s_valve_frame_enabled = use_valve_frame;
+    if (use_valve_frame)
         enabled_extensions[enabled_count++] = VR_XR_VALVE_FRAME_EXTENSION_NAME;
-    vr_log_line("INFO", "%s", has_valve_frame
+    vr_log_line("INFO", "%s", use_valve_frame
         ? "enabling XR_VALVE_frame_controller_interaction (Frame controller profile)"
-        : "runtime does not advertise XR_VALVE_frame_controller_interaction; controllers use the Touch/simple profiles");
+        : has_valve_frame
+            ? "XR_VALVE_frame_controller_interaction not enabled (no controller actions outside --vr-menu)"
+            : "runtime does not advertise XR_VALVE_frame_controller_interaction; controllers use the Touch/simple profiles");
     XrInstanceCreateInfo instance_create_info = { .type = XR_TYPE_INSTANCE_CREATE_INFO };
     strncpy(instance_create_info.applicationInfo.applicationName, "ROLLER VR",
             XR_MAX_APPLICATION_NAME_SIZE - 1);
@@ -1119,6 +1124,9 @@ bool vr_run_frame(void)
          * session (if the runtime has not already) and destroys the instance. */
         s_should_render_this_tick = false;
         s_frame_view_count_for_layer = 0;
+        /* Not focused, so this only sends the pad to rest: controllers must not keep
+         * a held throttle or steering value while the game shuts down. */
+        vr_input_frame(false);
         bool keep_running = main_loop_iteration() != 0;
         return keep_running && s_instance != XR_NULL_HANDLE;
     }
