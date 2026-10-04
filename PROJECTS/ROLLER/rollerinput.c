@@ -1432,9 +1432,13 @@ void InputShutdown(void)
     InputPhoneShutdown();
 #endif
 #if defined(_WIN32)
+#if defined(ROLLER_VR_BUILD)
   /* Under WinMM InputInit() took no SDL reference, so a quit here would drop the VR pad's. */
   if (InputGetSDLInitFlags())
     SDL_QuitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD);
+#else
+  SDL_QuitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD);
+#endif
 #elif defined(IS_ANDROID)
   SDL_QuitSubSystem(SDL_INIT_SENSOR);
   SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
