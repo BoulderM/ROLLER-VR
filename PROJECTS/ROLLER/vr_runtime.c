@@ -12,6 +12,8 @@
 #include "vr_log.h"
 #include "vr_session_fsm.h"
 #include "vr_camera_compose.h"
+#include "vr_input.h"
+#include "vr_input_map.h"  /* VR_XR_VALVE_FRAME_EXTENSION_NAME */
 
 #include <SDL3/SDL.h>
 
@@ -61,6 +63,7 @@ static const char *s_vk_device_ext_ptrs[VR_EXT_LIST_MAX];
 static int s_exit_status = 0;             /* process exit status, see vr_exit_status() */
 static bool s_quit_forwarded = false;     /* OpenXR asked to quit and the game has been told, see vr_forward_quit_to_game() */
 static int s_test_runtime_exit_after = 0; /* ROLLER_VR_TEST_RUNTIME_EXIT_AFTER=N, see vr_run_frame() */
+static bool s_valve_frame_enabled = false; /* XR_VALVE_frame_controller_interaction enabled, see vr_init() */
 
 /* VrSessionState mirrors XrSessionState numerically so the state machine can be
  * fed the runtime's values directly. */
@@ -204,6 +207,7 @@ bool vr_prepare_vulkan(SDL_GPUVulkanOptions *out_options)
         return fail_xr("xrEnumerateInstanceExtensionProperties failed", xr_result);
     }
     bool has_enable_v1 = false, has_enable2 = false;
+    bool has_valve_frame = false;
     vr_log_line("INFO", "OpenXR runtime advertises %u instance extensions:", (unsigned)ext_count);
     for (uint32_t i = 0; i < ext_count; i++) {
         vr_log_line("INFO", "  %s (v%u)", ext_props[i].extensionName, (unsigned)ext_props[i].extensionVersion);
@@ -211,6 +215,8 @@ bool vr_prepare_vulkan(SDL_GPUVulkanOptions *out_options)
             has_enable_v1 = true;
         if (strcmp(ext_props[i].extensionName, XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME) == 0)
             has_enable2 = true;
+        if (strcmp(ext_props[i].extensionName, VR_XR_VALVE_FRAME_EXTENSION_NAME) == 0)
+            has_valve_frame = true;
     }
     free(ext_props);
 
@@ -224,10 +230,19 @@ bool vr_prepare_vulkan(SDL_GPUVulkanOptions *out_options)
         vr_log_line("INFO", "using XR_KHR_vulkan_enable (the application creates the Vulkan instance/device)");
 
     /* --- 2. Create the OpenXR instance and find the headset --- */
-    const char *enabled_extensions[] = {
-        s_vk_binding == VR_VK_BINDING_ENABLE_V1 ? XR_KHR_VULKAN_ENABLE_EXTENSION_NAME
-                                                : XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME
-    };
+    /* XR_VALVE_frame_controller_interaction only when advertised: requesting an
+     * unavailable extension fails xrCreateInstance. Valve: without it the Frame
+     * controllers appear as emulated Oculus Touch controllers. */
+    const char *enabled_extensions[2];
+    uint32_t enabled_count = 0;
+    enabled_extensions[enabled_count++] = s_vk_binding == VR_VK_BINDING_ENABLE_V1
+        ? XR_KHR_VULKAN_ENABLE_EXTENSION_NAME : XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME;
+    s_valve_frame_enabled = has_valve_frame;
+    if (has_valve_frame)
+        enabled_extensions[enabled_count++] = VR_XR_VALVE_FRAME_EXTENSION_NAME;
+    vr_log_line("INFO", "%s", has_valve_frame
+        ? "enabling XR_VALVE_frame_controller_interaction (Frame controller profile)"
+        : "runtime does not advertise XR_VALVE_frame_controller_interaction; controllers use the Touch/simple profiles");
     XrInstanceCreateInfo instance_create_info = { .type = XR_TYPE_INSTANCE_CREATE_INFO };
     strncpy(instance_create_info.applicationInfo.applicationName, "ROLLER VR",
             XR_MAX_APPLICATION_NAME_SIZE - 1);
@@ -238,7 +253,7 @@ bool vr_prepare_vulkan(SDL_GPUVulkanOptions *out_options)
      * 2026-10-02 -- Monado, which does implement 1.1, never showed this).
      * Nothing here uses any 1.1-only feature, so request 1.0 instead. */
     instance_create_info.applicationInfo.apiVersion = XR_API_VERSION_1_0;
-    instance_create_info.enabledExtensionCount = 1;
+    instance_create_info.enabledExtensionCount = enabled_count;
     instance_create_info.enabledExtensionNames = enabled_extensions;
 
     s_instance = XR_NULL_HANDLE;
@@ -571,6 +586,10 @@ bool vr_init(void)
         return false;
     }
 
+    /* --- 8. Controller actions (--vr-menu only; failure is not fatal) --- */
+    if (g_bVRMenuMode && !vr_input_xr_init(s_instance, s_session, s_valve_frame_enabled))
+        vr_log_line("WARN", "VR controller actions unavailable; keyboard and gamepads still work");
+
     return true;
 }
 
@@ -636,6 +655,8 @@ static bool vr_poll_events(void)
             }
             if (actions & VR_ACTION_REQUEST_QUIT)
                 quit = true;
+        } else if (event.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED) {
+            vr_input_xr_on_profile_changed();
         } else if (event.type == XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING) {
             /* Instance loss takes the same non-zero-exit path as a
              * failed OpenXR call (vr_frame_call_failed), not the zero-exit path a
@@ -761,6 +782,7 @@ void vr_shutdown(void)
         s_frame_open = false;
     }
     vr_end_session_cleanly();
+    vr_input_xr_shutdown();
     xrDestroySession(s_session);
     s_session = XR_NULL_HANDLE;
     xrDestroyInstance(s_instance);
@@ -1128,6 +1150,10 @@ bool vr_run_frame(void)
      * first). */
     s_frame_open = true;
     s_cpuFrameStartTicks = SDL_GetPerformanceCounter();
+
+    /* Controllers (or --vr-fake-input) into the VR controller pad, before
+     * main_loop_iteration()'s UpdateSDL() pumps SDL and so publishes it. */
+    vr_input_frame(vr_fsm_is_focused(&s_fsm));
 
     s_should_render_this_tick = s_frame_state.shouldRender;
     if (s_should_render_this_tick) {

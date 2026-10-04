@@ -294,6 +294,7 @@ pub fn build(b: *std.Build) void {
                 "PROJECTS/ROLLER/vr_session_fsm.c",
                 "PROJECTS/ROLLER/vr_input_map.c",
                 "PROJECTS/ROLLER/vr_input_pad.c",
+                "PROJECTS/ROLLER/vr_input.c",
                 "PROJECTS/ROLLER/vr_ini_merge.c",
             },
         });
