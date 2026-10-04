@@ -540,6 +540,65 @@ bool ROLLERTryAcquireGPUSwapchainTexture(SDL_GPUCommandBuffer *pCmdBuf, SDL_Wind
 
 //-------------------------------------------------------------------------------------------------
 
+#if defined(ROLLER_VR_BUILD)
+/* --vr-menu only: draw the current menu frame (scrbuf, 8-bit indexed, winw x
+ * winh, palette pal_addr) into the keyboard focus window through its plain
+ * SDL window surface, scaled to fit at the 640:400 aspect with a black
+ * letterbox. The window is never claimed for the GPU device, so this does not
+ * touch the eye path. Race states are skipped: the race is in the headset and
+ * scrbuf holds no race picture in VR mode. */
+static void VRMirrorMenuFrame(void)
+{
+  static SDL_Surface *s_pMirrorSrc = NULL;
+  static int s_bLoggedFirst = 0;
+
+  if (eFrontendCurrentState == eFRONTEND_STATE_RACING ||
+      eFrontendCurrentState == eFRONTEND_STATE_WINNER_RACE ||
+      eFrontendCurrentState == eFRONTEND_STATE_PAUSE_OVERLAY)
+    return;
+  if (!scrbuf || !pal_addr || winw <= 0 || winh <= 0)
+    return;
+
+  if (!s_pMirrorSrc || s_pMirrorSrc->w != winw || s_pMirrorSrc->h != winh) {
+    SDL_DestroySurface(s_pMirrorSrc);
+    s_pMirrorSrc = SDL_CreateSurface(winw, winh, SDL_PIXELFORMAT_RGBA32);
+    if (!s_pMirrorSrc)
+      return;
+  }
+  if (!SDL_LockSurface(s_pMirrorSrc))
+    return;
+  if (s_pMirrorSrc->pitch == winw * 4) {
+    ConvertIndexedToRGBA(scrbuf, pal_addr, (uint8 *)s_pMirrorSrc->pixels, winw, winh);
+  } else {
+    for (int y = 0; y < winh; ++y)
+      ConvertIndexedToRGBA(scrbuf + y * winw, pal_addr,
+                           (uint8 *)s_pMirrorSrc->pixels + y * s_pMirrorSrc->pitch, winw, 1);
+  }
+  SDL_UnlockSurface(s_pMirrorSrc);
+
+  /* Re-fetched every frame: SDL replaces the window surface after a resize. */
+  SDL_Surface *pDst = SDL_GetWindowSurface(s_pVRFocusWindow);
+  if (!pDst)
+    return;
+  float fScale = SDL_min((float)pDst->w / (float)winw, (float)pDst->h / (float)winh);
+  SDL_Rect dstRect;
+  dstRect.w = SDL_max(1, (int)((float)winw * fScale));
+  dstRect.h = SDL_max(1, (int)((float)winh * fScale));
+  dstRect.x = (pDst->w - dstRect.w) / 2;
+  dstRect.y = (pDst->h - dstRect.h) / 2;
+  SDL_FillSurfaceRect(pDst, NULL, SDL_MapSurfaceRGB(pDst, 0, 0, 0));
+  SDL_BlitSurfaceScaled(s_pMirrorSrc, NULL, pDst, &dstRect, SDL_SCALEMODE_NEAREST);
+  SDL_UpdateWindowSurface(s_pVRFocusWindow);
+
+  if (!s_bLoggedFirst) {
+    s_bLoggedFirst = 1;
+    SDL_Log("VR menu mode: mirroring menu frames to the focus window (%dx%d -> %dx%d in %dx%d, "
+            "frontend state %d)", winw, winh, dstRect.w, dstRect.h, pDst->w, pDst->h,
+            (int)eFrontendCurrentState);
+  }
+}
+#endif
+
 void UpdateSDLWindow()
 {
   if (g_bSnapshotMode) {
@@ -548,6 +607,12 @@ void UpdateSDLWindow()
   }
 
   if (!g_bPaletteSet) return;
+#if defined(ROLLER_VR_BUILD)
+  if (s_pVRFocusWindow) { /* exists only under --vr-menu */
+    VRMirrorMenuFrame();
+    return;
+  }
+#endif
   if (ROLLERGpuPresentationSuspended()) return;
 
 #if defined(IS_WASM)
@@ -872,7 +937,8 @@ int InitSDL(char *whiplash_root, const char *midi_root)
       /* Keyboard path for --vr-menu. Not claimed for the GPU device (see
        * s_pVRFocusWindow's comment); a failure here only costs keyboard input,
        * so it is logged rather than fatal. */
-      s_pVRFocusWindow = SDL_CreateWindow("ROLLER VR - click here for keyboard focus", 480, 80, 0);
+      s_pVRFocusWindow = SDL_CreateWindow("ROLLER VR - click here for keyboard focus", 1280, 800,
+                                          SDL_WINDOW_RESIZABLE);
       if (s_pVRFocusWindow) {
         SDL_RaiseWindow(s_pVRFocusWindow);
         SDL_Log("VR menu mode: keyboard focus window created (id %u)",
@@ -880,6 +946,11 @@ int InitSDL(char *whiplash_root, const char *midi_root)
       } else {
         SDL_Log("VR menu mode: couldn't create the keyboard focus window: %s", SDL_GetError());
       }
+      /* Software menu renderer (no GPU device/window, as snapshot mode does),
+       * so the frontend draws its screens into scrbuf; without one every
+       * menu_render_* call is a no-op. Its end_frame calls UpdateSDLWindow(),
+       * which mirrors scrbuf into the focus window (VRMirrorMenuFrame()). */
+      s_pMenuRenderer = menu_render_create(NULL, NULL);
       /* Gamepads and joysticks (SDL_INIT_JOYSTICK/GAMEPAD) and the input
        * bindings, as the flat-screen path does after creating its window.
        * Keyboard keys themselves reach the game through UpdateSDL()'s
