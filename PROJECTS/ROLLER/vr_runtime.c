@@ -1480,22 +1480,30 @@ static void vr_hud_quad_maybe_dump(SDL_GPUTexture *tex, int w, int h)
 static bool vr_hud_quad_frame(bool eyes_rendered, XrCompositionLayerQuad *out_layer)
 {
     bool ok = false;
+    static int s_hud_failed_w, s_hud_failed_h; /* don't retry (and re-log) a size that already failed */
     const bool racing_now = (int)eFrontendCurrentState == (int)eFRONTEND_STATE_RACING;
     if (racing_now && eyes_rendered) {
         int hud_w = 0, hud_h = 0;
         SDL_GPUTexture *hud_tex = game_render_vr_get_hud_overlay_texture(g_pGameRenderer, &hud_w, &hud_h);
-        if (hud_tex && hud_w > 0 && hud_h > 0) {
+        if (hud_tex && hud_w > 0 && hud_h > 0 && !(hud_w == s_hud_failed_w && hud_h == s_hud_failed_h)) {
             if (!s_hud_quad.swapchain || hud_w != s_hud_quad_last_w || hud_h != s_hud_quad_last_h) {
                 vr_quad_destroy(&s_hud_quad);
                 s_hud_quad_last_w = hud_w;
                 s_hud_quad_last_h = hud_h;
-                if (!vr_quad_init(s_session, s_swapchain_format, (uint32_t)hud_w, (uint32_t)hud_h, "hud", &s_hud_quad))
+                if (!vr_quad_init(s_session, s_swapchain_format, (uint32_t)hud_w, (uint32_t)hud_h, "hud", &s_hud_quad)) {
                     hud_tex = NULL;
-                else
+                    s_hud_failed_w = hud_w;
+                    s_hud_failed_h = hud_h;
+                } else {
                     vr_log_line("INFO", "hud quad: swapchain %dx%d (palette[0] rgb6=%d,%d,%d)", hud_w, hud_h,
                                 (int)palette[0].byR, (int)palette[0].byG, (int)palette[0].byB);
+                }
             }
         }
+        /* hud_tex may still be non-NULL here if its size matches a previous
+         * failure (the outer condition above skipped re-creating the
+         * swapchain) -- s_hud_quad.swapchain stays NULL in that case, so the
+         * submit check below still correctly does nothing this frame. */
         if (hud_tex && s_hud_quad.swapchain) {
             const XrPosef hud_pose = {
                 .orientation = { 0.0f, 0.0f, 0.0f, 1.0f },
@@ -1804,8 +1812,12 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
      * draw_road() -> game_copypic() -> test_panel() drew into scrbuf into
      * hudOverlayTex. Eye 1's begin frame clears it again, so it converts
      * once per tick. scene_render_gpu does not composite it into the eye;
-     * vr_hud_quad_frame() submits it as its own head-locked layer. */
-    game_render_vr_set_hud_source(g_pGameRenderer, pMainScrPtr, winw, winh);
+     * vr_hud_quad_frame() submits it as its own head-locked layer. Gated on
+     * g_bVRMenuMode: only --vr-menu runs ever submit the quad, so a plain
+     * --vr/--vr-demo run skips the per-tick palette conversion and upload of
+     * a throwaway texture. */
+    if (g_bVRMenuMode)
+        game_render_vr_set_hud_source(g_pGameRenderer, pMainScrPtr, winw, winh);
 
     /* Same view-state globals draw_road() itself reads to build its
      * GameRenderCamera/GameRenderProjection (3d.c draw_road(), just after
