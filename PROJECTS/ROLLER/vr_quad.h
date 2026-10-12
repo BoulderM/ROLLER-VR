@@ -30,14 +30,16 @@ bool vr_quad_init(XrSession session, int64_t swapchain_format,
  * space and anchoring policy. Returns false (out_layer left zeroed, nothing to
  * submit this frame) on any failure, logged.
  *
- * Preconditions on src, the same ones the eye copy in vr_runtime.c relies on:
- *   - every GPU command that writes src has already completed (the caller has
- *     waited on its fence, or on SDL_WaitForGPUIdle()); the copy's barriers do
- *     not order against SDL_GPU's own submissions;
- *   - src was created with SDL_GPU_TEXTUREUSAGE_SAMPLER, so SDL_GPU's Vulkan
- *     backend leaves it resting in VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
- *     between passes. The copy transitions it to TRANSFER_SRC_OPTIMAL and back
- *     to SHADER_READ_ONLY_OPTIMAL, so SDL_GPU's layout bookkeeping stays right.
+ * Precondition on src: it was created with SDL_GPU_TEXTUREUSAGE_SAMPLER, so
+ * SDL_GPU's Vulkan backend leaves it resting in
+ * VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL between passes. The copy
+ * transitions it to TRANSFER_SRC_OPTIMAL and back, so SDL_GPU's layout
+ * bookkeeping stays right. The caller does NOT need to have waited on a
+ * fence or SDL_WaitForGPUIdle() first: the copy's first barrier uses
+ * VK_PIPELINE_STAGE_ALL_COMMANDS_BIT/VK_ACCESS_MEMORY_WRITE_BIT as its source
+ * scope, which orders against whatever last wrote src on this same queue
+ * (same-queue submission order is enough for that scope to apply), whether
+ * or not the caller already synced on the CPU side.
  *
  * Uses vr_runtime.c's own copy command buffer and queue (drained with
  * vkQueueWaitIdle before returning), so it must not run while vr_runtime.c's

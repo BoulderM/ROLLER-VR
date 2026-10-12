@@ -139,13 +139,19 @@ bool vr_quad_submit(VrQuad *quad, SDL_GPUTexture *src,
     /* Same barriers as the eye copy (vr_present_stereo_frame(), whose comments
      * carry the reasoning): src leaves and re-enters SDL_GPU's SAMPLER layout,
      * dst goes UNDEFINED -> TRANSFER_DST -> COLOR_ATTACHMENT_OPTIMAL (the layout
-     * XR_KHR_vulkan_enable says the runtime expects on release). TOP_OF_PIPE /
-     * zero src access on the way in is fine because the producer was already
-     * waited on (see the precondition in vr_quad.h). */
+     * XR_KHR_vulkan_enable says the runtime expects on release).
+     *
+     * srcStageMask is ALL_COMMANDS (not TOP_OF_PIPE) with a MEMORY_WRITE source
+     * access: within one queue, a pipeline barrier's first synchronization scope
+     * covers every command submitted earlier on that queue, so this is enough to
+     * order against whatever wrote src -- a prior vkQueueSubmit, with no fence
+     * wait needed first -- without knowing whether the write was a transfer, a
+     * render pass, or something else. TOP_OF_PIPE/0 (the first draft) waits on
+     * nothing at all and raced SDL_GPU's own upload of a freshly-written src. */
     VkImageMemoryBarrier pre[2] = {
         {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .srcAccessMask = 0, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+            .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
             .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -160,7 +166,7 @@ bool vr_quad_submit(VrQuad *quad, SDL_GPUTexture *src,
             .image = target_image, .subresourceRange = range,
         },
     };
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                          0, 0, NULL, 0, NULL, 2, pre);
 
     VkImageCopy region = {
