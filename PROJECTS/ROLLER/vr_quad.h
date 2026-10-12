@@ -27,7 +27,10 @@ bool vr_quad_init(XrSession session, int64_t swapchain_format,
 /* Copies src (an SDL_GPUTexture of exactly src_w x src_h) into quad's
  * swapchain image, and fills *out_layer ready to go in xrEndFrame's layers
  * array. space/pose/size are used as given; the caller picks the reference
- * space and anchoring policy. Returns false (out_layer left zeroed, nothing to
+ * space and anchoring policy. blend_source_alpha: blend by src's alpha,
+ * read as straight (unpremultiplied) alpha -- both
+ * BLEND_TEXTURE_SOURCE_ALPHA_BIT and UNPREMULTIPLIED_ALPHA_BIT are set;
+ * false submits the quad opaque. Returns false (out_layer left zeroed, nothing to
  * submit this frame) on any failure, logged.
  *
  * Precondition on src: it was created with SDL_GPU_TEXTUREUSAGE_SAMPLER, so

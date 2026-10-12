@@ -241,6 +241,18 @@ void scene_render_gpu_set_msaa(SceneRendererGPU *r, int level);
 
 void scene_render_gpu_set_hud_buffer(SceneRendererGPU *r,
                                      uint8 *buf, int w, int h);
+#if defined(ROLLER_VR_BUILD)
+/* The RGBA texture scene_render_gpu_end_frame_internal() builds from the last
+ * hud buffer given to scene_render_gpu_set_hud_buffer() (NULL before the first
+ * one). It is rebuilt only on a frame that set a hud buffer, so the caller
+ * must know this frame set one. Valid until the next end_frame call on this
+ * renderer that sets a hud buffer -- the caller must consume it (copy it
+ * elsewhere) before that, same lifetime rule as
+ * scene_render_gpu_end_frame_to_vr_eye()'s result. During a VR eye render
+ * (VR-eye MVP override set) the texture is built but NOT composited into the
+ * eye: VR shows it as its own head-locked quad layer instead. */
+SDL_GPUTexture *scene_render_gpu_get_hud_overlay_texture(SceneRendererGPU *r, int *out_w, int *out_h);
+#endif
 void scene_render_gpu_set_split_screen(SceneRendererGPU *r, bool split);
 
 void texture_uv_map_reset(void);

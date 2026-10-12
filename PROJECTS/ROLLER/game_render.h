@@ -70,6 +70,13 @@ void game_render_end_frame(GameRenderer *renderer);
 void game_render_set_vr_eye_mvp(GameRenderer *renderer, const float mvp[16]);
 SDL_GPUTexture *game_render_end_frame_to_vr_eye(GameRenderer *renderer, Uint32 uiWidth, Uint32 uiHeight);
 SDL_GPUFence *game_render_get_last_vr_fence(GameRenderer *renderer);
+#if defined(ROLLER_VR_BUILD)
+/* VR HUD quad: the hud source for this tick's eye render (call after
+ * game_render_begin_frame(), before the eye's end frame), and the RGBA
+ * texture built from it (see scene_render_gpu_get_hud_overlay_texture()). */
+void game_render_vr_set_hud_source(GameRenderer *renderer, uint8 *buf, int w, int h);
+SDL_GPUTexture *game_render_vr_get_hud_overlay_texture(GameRenderer *renderer, int *out_w, int *out_h);
+#endif
 /* Queued draw-command/vertex counts for the most recent render cycle (see
  * scene_render_gpu_get_draw_stats). Zeroes if the renderer has no GPU. */
 void game_render_get_draw_stats(GameRenderer *renderer, int *outDrawCmdCount, int *outVertexCount);

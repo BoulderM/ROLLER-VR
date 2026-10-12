@@ -204,7 +204,12 @@ bool vr_quad_submit(VrQuad *quad, SDL_GPUTexture *src,
      * (arraySize = 1 at creation). */
     out_layer->type = XR_TYPE_COMPOSITION_LAYER_QUAD;
     out_layer->next = NULL;
-    out_layer->layerFlags = blend_source_alpha ? XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT : 0;
+    /* Straight (unpremultiplied) alpha: this codebase's RGBA sources (e.g.
+     * indexed_to_rgba()) keep full RGB at alpha 0, which a premultiplied
+     * blend would add on top of what lies behind. */
+    out_layer->layerFlags = blend_source_alpha
+        ? (XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT | XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT)
+        : 0;
     out_layer->space = space;
     out_layer->eyeVisibility = XR_EYE_VISIBILITY_BOTH;
     out_layer->subImage.swapchain = quad->swapchain;

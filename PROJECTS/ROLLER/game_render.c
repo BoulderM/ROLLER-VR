@@ -292,6 +292,18 @@ SDL_GPUFence *game_render_get_last_vr_fence(GameRenderer *renderer) {
     if (!renderer || !renderer->gpu) return NULL;
     return scene_render_gpu_get_last_fence(renderer->gpu);
 }
+#if defined(ROLLER_VR_BUILD)
+
+void game_render_vr_set_hud_source(GameRenderer *renderer, uint8 *buf, int w, int h) {
+    if (!renderer || !renderer->gpu) return;
+    scene_render_gpu_set_hud_buffer(renderer->gpu, buf, w, h);
+}
+
+SDL_GPUTexture *game_render_vr_get_hud_overlay_texture(GameRenderer *renderer, int *out_w, int *out_h) {
+    if (!renderer || !renderer->gpu) return NULL;
+    return scene_render_gpu_get_hud_overlay_texture(renderer->gpu, out_w, out_h);
+}
+#endif
 
 void game_render_get_draw_stats(GameRenderer *renderer, int *outDrawCmdCount, int *outVertexCount) {
     if (!renderer || !renderer->gpu) {

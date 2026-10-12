@@ -3128,6 +3128,14 @@ static bool scene_render_gpu_end_frame_internal(SceneRendererGPU *r,
         }
         r->hudPixelCount = hw * hh;
     }
+#if defined(ROLLER_VR_BUILD)
+
+    /* A VR eye render (its MVP override is set): hudOverlayTex is built above
+     * but not composited into the eye -- it would sit flat on one eye's image.
+     * vr_runtime.c shows it as its own head-locked quad layer instead. */
+    if (r->vrEyeMvpOverrideSet)
+        drawHUD = false;
+#endif
 
     Uint64 tHudUpload = SDL_GetTicksNS();
     r->hudUploadNs = tHudUpload - tVertexUpload;
@@ -4363,6 +4371,16 @@ void scene_render_gpu_set_hud_buffer(SceneRendererGPU *r, uint8 *buf, int w, int
     r->hudSrcW   = w;
     r->hudSrcH   = h;
 }
+#if defined(ROLLER_VR_BUILD)
+
+SDL_GPUTexture *scene_render_gpu_get_hud_overlay_texture(SceneRendererGPU *r, int *out_w, int *out_h)
+{
+    if (!r) return NULL;
+    if (out_w) *out_w = r->hudTexW;
+    if (out_h) *out_h = r->hudTexH;
+    return r->hudOverlayTex;
+}
+#endif
 
 void scene_render_gpu_set_split_screen(SceneRendererGPU *r, bool split)
 {

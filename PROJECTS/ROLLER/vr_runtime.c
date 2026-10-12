@@ -78,6 +78,12 @@ static bool s_menu_quad_anchor_pending;   /* a menu state began and its anchor i
 static bool s_menu_quad_anchor_warned;    /* one WARN per pending anchor, not one per frame */
 static int s_menu_quad_last_state = -1;
 static int s_menu_quad_state_frames;      /* menu-quad frames submitted since the last state change */
+/* HUD quad state: see vr_hud_quad_frame(). */
+static VrQuad s_hud_quad;
+static int s_hud_quad_last_w, s_hud_quad_last_h;
+static bool s_hud_quad_showing;       /* submitted last frame (for the shown/hidden log edges) */
+static int s_hud_quad_run_frames;     /* frames submitted since it last started showing */
+static int s_hud_quad_total_frames;   /* frames submitted this session (PNG dump schedule) */
 
 VkQueue vr_runtime_vk_queue(void) { return s_vk_queue; }
 VkCommandBuffer vr_runtime_copy_command_buffer(void) { return s_command_buffer; }
@@ -477,12 +483,12 @@ static bool vr_menu_quad_reanchor(XrTime predicted_display_time)
     return true;
 }
 
-/* --vr-eye-dump-dir test hook: reads the menu quad's source texture back and
- * writes it as a PNG (R8G8B8A8, so no channel swizzle). Same download sequence
- * as scene_render_gpu_dump_vr_eye_png(), on its own command buffer. */
-static bool vr_menu_quad_dump_png(const char *path)
+/* --vr-eye-dump-dir test hook: reads a quad's R8G8B8A8 source texture (the
+ * menu quad's, or the HUD overlay) back and writes it as a PNG, alpha kept (no
+ * channel swizzle). Same download sequence as scene_render_gpu_dump_vr_eye_png(),
+ * on its own command buffer. */
+static bool vr_quad_texture_dump_png(SDL_GPUTexture *tex, Uint32 w, Uint32 h, const char *path)
 {
-    const Uint32 w = (Uint32)s_menu_quad_w, h = (Uint32)s_menu_quad_h;
     SDL_GPUTransferBufferCreateInfo tbi = { .usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, .size = w * h * 4 };
     SDL_GPUTransferBuffer *tb = SDL_CreateGPUTransferBuffer(s_gpu, &tbi);
     if (!tb) return false;
@@ -490,7 +496,7 @@ static bool vr_menu_quad_dump_png(const char *path)
     SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(s_gpu);
     if (cmd) {
         SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cmd);
-        SDL_GPUTextureRegion src = { .texture = s_menu_quad_texture, .w = w, .h = h, .d = 1 };
+        SDL_GPUTextureRegion src = { .texture = tex, .w = w, .h = h, .d = 1 };
         SDL_GPUTextureTransferInfo dst = { .transfer_buffer = tb, .pixels_per_row = w, .rows_per_layer = h };
         SDL_DownloadFromGPUTexture(cp, &src, &dst);
         SDL_EndGPUCopyPass(cp);
@@ -521,7 +527,7 @@ static void vr_menu_quad_count_frame(int state)
     char dump_path[320];
     SDL_snprintf(dump_path, sizeof(dump_path), "%s/menu%02d_state%d_%dx%d.png",
                  g_szVREyeDumpDir, s_dumps++, state, s_menu_quad_w, s_menu_quad_h);
-    if (vr_menu_quad_dump_png(dump_path))
+    if (vr_quad_texture_dump_png(s_menu_quad_texture, (Uint32)s_menu_quad_w, (Uint32)s_menu_quad_h, dump_path))
         vr_log_line("INFO", "menu quad PNG dump: %s", dump_path);
     else
         vr_log_line("WARN", "menu quad PNG dump failed for %s: %s", dump_path, SDL_GetError());
@@ -1055,6 +1061,9 @@ void vr_shutdown(void)
     s_command_buffer = VK_NULL_HANDLE;
     s_command_pool = VK_NULL_HANDLE;
     vr_menu_quad_release();
+    vr_quad_destroy(&s_hud_quad);
+    s_hud_quad_last_w = s_hud_quad_last_h = 0;
+    s_hud_quad_showing = false;
 
     for (Uint32 i = 0; i < s_view_count; i++) {
         xrDestroySwapchain(s_swapchains[i]);
@@ -1433,6 +1442,91 @@ static Uint32 view_configs_height(Uint32 i)
     return s_view_configs[i].recommendedImageRectHeight;
 }
 
+/* --- HUD quad ----------------------------------------------------------
+ * The race HUD (speed, position, lap), head-locked: submitted in s_view_space,
+ * so the runtime keeps it fixed in front of the head with no per-frame pose
+ * math here. Its source is the same hudOverlayTex the flat build composites
+ * over its 3D view, built from scrbuf during eye 0's render
+ * (vr_present_stereo_frame() sets the hud source; scene_render_gpu skips the
+ * flat composite for VR eyes).
+ *
+ * Placement constants: config values, exact distance/size/legibility need
+ * the headset to tune. Pose in VIEW space: metres, -Z ahead, +Y up. */
+#define VR_HUD_QUAD_DISTANCE_M        1.5f
+#define VR_HUD_QUAD_WIDTH_M           1.2f
+#define VR_HUD_QUAD_VERTICAL_OFFSET_M (-0.35f)
+
+/* --vr-eye-dump-dir test hook: the HUD texture 45 submitted frames into the
+ * session (countdown), then every 60 (through the scripted drive), at most 8. */
+static void vr_hud_quad_maybe_dump(SDL_GPUTexture *tex, int w, int h)
+{
+    static int s_dumps;
+    const int n = s_hud_quad_total_frames;
+    if (!g_szVREyeDumpDir[0] || s_dumps >= 8 || n < 45 || (n - 45) % 60 != 0)
+        return;
+    char dump_path[320];
+    SDL_snprintf(dump_path, sizeof(dump_path), "%s/hud%02d_frame%d_%dx%d.png",
+                 g_szVREyeDumpDir, s_dumps++, s_vr_frames_presented, w, h);
+    if (vr_quad_texture_dump_png(tex, (Uint32)w, (Uint32)h, dump_path))
+        vr_log_line("INFO", "hud quad PNG dump: %s (frontend state %d)", dump_path, (int)eFrontendCurrentState);
+    else
+        vr_log_line("WARN", "hud quad PNG dump failed for %s: %s", dump_path, SDL_GetError());
+}
+
+/* Called once per OpenXR frame after main_loop_iteration(). Only while racing
+ * (eFRONTEND_STATE_RACING) and only on a tick whose eyes rendered: on other
+ * states scrbuf holds a menu picture, not a HUD, and on a tick with no eye
+ * render the texture was not rebuilt. */
+static bool vr_hud_quad_frame(bool eyes_rendered, XrCompositionLayerQuad *out_layer)
+{
+    bool ok = false;
+    const bool racing_now = (int)eFrontendCurrentState == (int)eFRONTEND_STATE_RACING;
+    if (racing_now && eyes_rendered) {
+        int hud_w = 0, hud_h = 0;
+        SDL_GPUTexture *hud_tex = game_render_vr_get_hud_overlay_texture(g_pGameRenderer, &hud_w, &hud_h);
+        if (hud_tex && hud_w > 0 && hud_h > 0) {
+            if (!s_hud_quad.swapchain || hud_w != s_hud_quad_last_w || hud_h != s_hud_quad_last_h) {
+                vr_quad_destroy(&s_hud_quad);
+                s_hud_quad_last_w = hud_w;
+                s_hud_quad_last_h = hud_h;
+                if (!vr_quad_init(s_session, s_swapchain_format, (uint32_t)hud_w, (uint32_t)hud_h, "hud", &s_hud_quad))
+                    hud_tex = NULL;
+                else
+                    vr_log_line("INFO", "hud quad: swapchain %dx%d (palette[0] rgb6=%d,%d,%d)", hud_w, hud_h,
+                                (int)palette[0].byR, (int)palette[0].byG, (int)palette[0].byB);
+            }
+        }
+        if (hud_tex && s_hud_quad.swapchain) {
+            const XrPosef hud_pose = {
+                .orientation = { 0.0f, 0.0f, 0.0f, 1.0f },
+                .position = { 0.0f, VR_HUD_QUAD_VERTICAL_OFFSET_M, -VR_HUD_QUAD_DISTANCE_M },
+            };
+            /* Source alpha: palette index 0 is transparent (indexed_to_rgba()). */
+            ok = vr_quad_submit(&s_hud_quad, hud_tex, (uint32_t)hud_w, (uint32_t)hud_h,
+                                s_view_space, hud_pose,
+                                (XrExtent2Df){ VR_HUD_QUAD_WIDTH_M,
+                                               VR_HUD_QUAD_WIDTH_M * (float)hud_h / (float)hud_w },
+                                true, out_layer);
+            if (ok) {
+                s_hud_quad_total_frames++;
+                vr_hud_quad_maybe_dump(hud_tex, hud_w, hud_h);
+            }
+        }
+    }
+    if (ok && !s_hud_quad_showing) {
+        s_hud_quad_run_frames = 0;
+        vr_log_line("INFO", "hud quad: shown (frontend state %d, presented frame %d)",
+                    (int)eFrontendCurrentState, s_vr_frames_presented);
+    } else if (!ok && s_hud_quad_showing) {
+        vr_log_line("INFO", "hud quad: hidden after %d frames (frontend state %d, presented frame %d)",
+                    s_hud_quad_run_frames, (int)eFrontendCurrentState, s_vr_frames_presented);
+    }
+    if (ok)
+        s_hud_quad_run_frames++;
+    s_hud_quad_showing = ok;
+    return ok;
+}
+
 bool vr_run_frame(void)
 {
     if (s_instance != XR_NULL_HANDLE && vr_poll_events())
@@ -1562,6 +1656,12 @@ bool vr_run_frame(void)
     XrCompositionLayerQuad menu_quad_layer;
     bool have_menu_quad = g_bVRMenuMode
         && vr_menu_quad_frame(s_frame_state.predictedDisplayTime, s_frame_state.shouldRender, &menu_quad_layer);
+    /* HUD quad (--vr-menu races only): racing ticks whose eyes rendered, so
+     * the HUD texture eye 0 built from scrbuf is this tick's. Also a local
+     * that outlives xrEndFrame() below. */
+    XrCompositionLayerQuad hud_quad_layer;
+    bool have_hud_quad = g_bVRMenuMode
+        && vr_hud_quad_frame(s_frame_view_count_for_layer > 0, &hud_quad_layer);
 
     XrCompositionLayerProjection projection_layer = {
         .type = XR_TYPE_COMPOSITION_LAYER_PROJECTION,
@@ -1573,12 +1673,14 @@ bool vr_run_frame(void)
      * order given, first is bottom-most): the projection layer first, quads
      * on top. A projection layer with viewCount 0 is invalid, so it is only
      * included when the race view rendered this tick. */
-    const XrCompositionLayerBaseHeader *submitted_layers[2];
+    const XrCompositionLayerBaseHeader *submitted_layers[3];
     uint32_t submitted_layer_count = 0;
     if (s_frame_view_count_for_layer > 0)
         submitted_layers[submitted_layer_count++] = (const XrCompositionLayerBaseHeader *)&projection_layer;
     if (have_menu_quad)
         submitted_layers[submitted_layer_count++] = (const XrCompositionLayerBaseHeader *)&menu_quad_layer;
+    if (have_hud_quad)
+        submitted_layers[submitted_layer_count++] = (const XrCompositionLayerBaseHeader *)&hud_quad_layer;
     XrFrameEndInfo frame_end_info = {
         .type = XR_TYPE_FRAME_END_INFO,
         .displayTime = s_frame_state.predictedDisplayTime,
@@ -1693,6 +1795,17 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
         s_frame_view_count_for_layer = 0;
         return;
     }
+
+    /* The HUD quad's source: the same scrbuf and size convention as the flat
+     * path's game_render_end_frame() hands scene_render_gpu (winw x winh is
+     * the full XMAX x YMAX window here, set by updatescreen()'s VR branch).
+     * Set once, after the caller's game_render_begin_frame() (which clears
+     * it) and before eye 0's end frame, which converts what eye 0's
+     * draw_road() -> game_copypic() -> test_panel() drew into scrbuf into
+     * hudOverlayTex. Eye 1's begin frame clears it again, so it converts
+     * once per tick. scene_render_gpu does not composite it into the eye;
+     * vr_hud_quad_frame() submits it as its own head-locked layer. */
+    game_render_vr_set_hud_source(g_pGameRenderer, pMainScrPtr, winw, winh);
 
     /* Same view-state globals draw_road() itself reads to build its
      * GameRenderCamera/GameRenderProjection (3d.c draw_road(), just after
