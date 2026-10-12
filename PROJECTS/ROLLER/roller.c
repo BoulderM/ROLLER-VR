@@ -2,6 +2,7 @@
 #if defined(ROLLER_VR_BUILD)
 #include "vr_diag.h"
 #include "vr_runtime.h"
+#include "vr_input_pad.h"
 #endif
 #include "scene_render_gpu.h"
 #include "crt_filter.h"
@@ -134,6 +135,8 @@ int g_bVRMenuMode = 0;
  * flat-screen present paths off in VR mode (ROLLERGpuPresentationSuspended()),
  * and those would use the swapchain and transfer buffer VR mode never makes. */
 static SDL_Window *s_pVRFocusWindow = NULL;
+int g_bVRDemoMode = 0;  /* --vr-demo: the attract-mode demo instead of the menu (no input) */
+int g_bVRFakeInput = 0; /* --vr-fake-input (Task 6) */
 #endif
 char g_szVREyeDumpDir[260] = { 0 };
 int g_iVREyeDumpEvery = 90; /* --vr-eye-dump-every N */
@@ -840,6 +843,59 @@ static void RaiseFileDescriptorLimit(void)
 
 //-------------------------------------------------------------------------------------------------
 
+#if defined(ROLLER_VR_BUILD)
+/* Audio for VR mode. InitSDL()'s VR branch returns before the windowed path's
+ * MIDI init, and SDL_Init() above leaves SDL_INIT_AUDIO out in VR mode, so both
+ * happen here instead. Called after vr_diag_init(), so failures land in
+ * roller-vr.log, and before InitSDL() returns, because main() calls initmusic()
+ * and readsoundconfig() right after, as on the windowed path. A missing audio
+ * device is not fatal (the windowed path's ErrorBoxExit would block a headset
+ * run). The MIDI part copies the windowed path below; keep the two in step. */
+static void ROLLERVRInitAudio(const char *midi_root)
+{
+  if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+    SDL_Log("VR audio: SDL_INIT_AUDIO failed (%s); continuing without sound", SDL_GetError());
+    return;
+  }
+  {
+    SDL_AudioSpec spec;
+    int iFrames = 0;
+    if (SDL_GetAudioDeviceFormat(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, &iFrames))
+      SDL_Log("VR audio: driver %s, default playback %s %d ch %d Hz (%d frames)",
+              SDL_GetCurrentAudioDriver(), SDL_GetAudioFormatName(spec.format),
+              spec.channels, spec.freq, iFrames);
+  }
+
+  char localMidiPath[256];
+  if (midi_root) {
+    SDL_strlcpy(localMidiPath, midi_root, sizeof(localMidiPath));
+  } else {
+    midi_root = SDL_GetBasePath();
+    if (midi_root) {
+      SDL_strlcpy(localMidiPath, midi_root, sizeof(localMidiPath));
+    } else {
+      SDL_strlcpy(localMidiPath, "./", sizeof(localMidiPath));
+    }
+  }
+  size_t lenMidiPath = strlen(localMidiPath);
+  if (lenMidiPath > 0 &&
+      localMidiPath[lenMidiPath - 1] != '/' &&
+      localMidiPath[lenMidiPath - 1] != '\\') {
+    SDL_strlcat(localMidiPath, "/", sizeof(localMidiPath));
+  }
+  SDL_strlcat(localMidiPath, "midi/wildmidi.cfg", sizeof(localMidiPath));
+  if (!MIDI_Init(localMidiPath)) {
+    SDL_Log("Failed to initialize WildMidi. Please check your configuration file '%s'.", localMidiPath);
+  }
+  if (!MIDI_OS_Init()) {
+    SDL_Log("Failed to initialize OS MIDI (rtmidi).");
+  }
+  if (!MIDI_OPL_Init()) {
+    SDL_Log("Failed to initialize OPL3 MIDI (libADLMIDI).");
+  }
+}
+
+#endif
 int InitSDL(char *whiplash_root, const char *midi_root)
 {
   RaiseFileDescriptorLimit();
@@ -933,6 +989,7 @@ int InitSDL(char *whiplash_root, const char *midi_root)
     SDL_DestroyProperties(gpuProps);
     if (!s_pGPUDevice)
       vr_diag_fatal("Couldn't create the GPU device: %s", SDL_GetError());
+    ROLLERVRInitAudio(midi_root);
     if (g_bVRMenuMode) {
       /* Keyboard path for --vr-menu. Not claimed for the GPU device (see
        * s_pVRFocusWindow's comment); a failure here only costs keyboard input,
@@ -951,6 +1008,24 @@ int InitSDL(char *whiplash_root, const char *midi_root)
        * menu_render_* call is a no-op. Its end_frame calls UpdateSDLWindow(),
        * which mirrors scrbuf into the focus window (VRMirrorMenuFrame()). */
       s_pMenuRenderer = menu_render_create(NULL, NULL);
+      /* Joystick input must keep flowing while SteamVR (not the focus window) has
+       * the desktop focus: SDL otherwise drops it whenever a window exists and none
+       * has keyboard focus (SDL_PrivateJoystickShouldIgnoreEvent). Covers physical
+       * pads and wheels and the VR controller pad alike. */
+      SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+#if defined(_WIN32)
+      /* The flat path reads ROLLER.INI's WindowsInputBackend before any joystick
+       * init (below, after the VR branch); do the same here so the pad attach
+       * starts SDL's joystick driver with the backend the game will use. */
+      InputLoadStartupConfig();
+      bool bVRPadDirectInput = InputGetWindowsBackend() == INPUT_WINDOWS_BACKEND_SDL_DINPUT;
+#else
+      bool bVRPadDirectInput = false; /* the hint is Windows-only */
+#endif
+      /* The VR controller pad, attached before InputInit() so the first device
+       * scan already includes it. */
+      if (!vr_input_pad_attach(bVRPadDirectInput))
+        SDL_Log("VR input: no VR controller pad; Frame controllers will not reach the game");
       /* Gamepads and joysticks (SDL_INIT_JOYSTICK/GAMEPAD) and the input
        * bindings, as the flat-screen path does after creating its window.
        * Keyboard keys themselves reach the game through UpdateSDL()'s
@@ -1862,6 +1937,9 @@ void ShutdownSDL()
       SDL_DestroyWindow(s_pWindow);
     s_pWindow = NULL;
 #if defined(ROLLER_VR_BUILD)
+    /* After InputShutdown() (above) has closed the game's handles, and before
+     * SDL_Quit() (vr_input_pad.h's lifetime precondition). No-op when unattached. */
+    vr_input_pad_detach();
     if (s_pVRFocusWindow)
       SDL_DestroyWindow(s_pVRFocusWindow);
     s_pVRFocusWindow = NULL;

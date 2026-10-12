@@ -86,6 +86,10 @@ extern int g_iVREyeDumpEvery;          /* --vr-eye-dump-every N: dump interval i
 extern int g_iVREyeDumpFrom;           /* --vr-eye-dump-from F: first presented frame eligible for a dump (default 0) */
 extern int g_iVRFreezeFrom;            /* --vr-freeze-from F: freeze game ticks from presented frame F (-1 = off) */
 extern bool g_bVRTestFreeze;           /* true once --vr-freeze-from is reached; ORed into g_bShiftFrozen */
+#if defined(ROLLER_VR_BUILD)
+extern int g_bVRDemoMode;              /* --vr-demo: the attract-mode demo race; without it --vr boots the menu */
+extern int g_bVRFakeInput;             /* --vr-fake-input: scripted VR controller input (needs the menu mode) */
+#endif
 
 // Debug overlay accessor
 struct DebugOverlay;

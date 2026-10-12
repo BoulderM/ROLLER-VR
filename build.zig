@@ -292,6 +292,11 @@ pub fn build(b: *std.Build) void {
                 "PROJECTS/ROLLER/vr_log.c",
                 "PROJECTS/ROLLER/vr_ext_list.c",
                 "PROJECTS/ROLLER/vr_session_fsm.c",
+                "PROJECTS/ROLLER/vr_input_map.c",
+                "PROJECTS/ROLLER/vr_input_pad.c",
+                "PROJECTS/ROLLER/vr_input.c",
+                "PROJECTS/ROLLER/vr_ini_merge.c",
+                "PROJECTS/ROLLER/vr_fake_input.c",
             },
         });
 
@@ -356,6 +361,30 @@ pub fn build(b: *std.Build) void {
                 .name = "vr_vulkan_options_test",
                 .root_module = vk_options_mod,
             }));
+
+            // Virtual gamepad check (Frame controller transport). No GPU or display
+            // needed, so unlike vr_vulkan_options_test it also runs as a build step.
+            const vpad_mod = b.createModule(.{
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            });
+            vpad_mod.addCSourceFiles(.{ .files = &.{
+                "tests/vr_virtual_pad_test.c",
+                "PROJECTS/ROLLER/vr_input_pad.c",
+                "PROJECTS/ROLLER/vr_input_map.c",
+                "PROJECTS/ROLLER/vr_log.c",
+            }, .flags = c_flags });
+            vpad_mod.addIncludePath(b.path("PROJECTS/ROLLER"));
+            vpad_mod.addIncludePath(sdl_vr.builder.path("include"));
+            vpad_mod.linkLibrary(sdl_vr.artifact("SDL3"));
+            const vpad_exe = b.addExecutable(.{ .name = "vr_virtual_pad_test", .root_module = vpad_mod });
+            b.installArtifact(vpad_exe);
+            const run_vpad = b.addRunArtifact(vpad_exe);
+            run_vpad.setEnvironmentVariable("SDL_VIDEODRIVER", "dummy");
+            run_vpad.setEnvironmentVariable("SDL_AUDIODRIVER", "dummy");
+            const vpad_step = b.step("test-vr-sdl", "Run the SDL virtual-gamepad check (needs -Dvr; no GPU or display)");
+            vpad_step.dependOn(&run_vpad.step);
         }
     }
 
@@ -943,6 +972,9 @@ fn configureRenderQueue3DTests(
     vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_effect_projection_test", "tests/vr_effect_projection_test.c", "PROJECTS/ROLLER/vr_camera_compose.c"));
     vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_billboard_yaw_test", "tests/vr_billboard_yaw_test.c", "PROJECTS/ROLLER/vr_camera_compose.c"));
     vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_building_near_test", "tests/vr_building_near_test.c", "PROJECTS/ROLLER/vr_camera_compose.c"));
+    vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_input_map_test", "tests/vr_input_map_test.c", "PROJECTS/ROLLER/vr_input_map.c"));
+    vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_ini_merge_test", "tests/vr_ini_merge_test.c", "PROJECTS/ROLLER/vr_ini_merge.c"));
+    vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_fake_input_test", "tests/vr_fake_input_test.c", "PROJECTS/ROLLER/vr_fake_input.c"));
 
     const test_step = b.step("test", "Run focused unit tests and optional seam checks");
     test_step.dependOn(render_queue_tests);

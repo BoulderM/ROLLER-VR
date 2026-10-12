@@ -137,6 +137,14 @@ int InputCapturePoll(int iAction, tInputBinding *pBindingOut);
 void InputGetBindingPreview(const tInputBinding *pBinding, tInputBindingPreview *pPreview);
 int InputGetDeviceCount(void);
 const tInputDevice *InputGetDevice(int iDeviceRef);
+#if defined(ROLLER_VR_BUILD)
+/* Binds player 1's six driving actions to the VR controller pad when none of them
+ * has a controller binding. 1 = bound now, 2 = already bound to the pad, 0 = P1
+ * has other controller bindings (kept), -1 = no such pad. */
+int InputVRBindDefaultsToPadIfUnbound(SDL_JoystickID joyId);
+/* Writes only those six lines into ROLLER.INI (atomic, ROLLER.INI.bak first). */
+int InputVRSaveP1PadBindings(void);
+#endif
 
 //-------------------------------------------------------------------------------------------------
 #endif

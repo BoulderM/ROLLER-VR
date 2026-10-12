@@ -12,6 +12,9 @@
 #if defined(IS_WASM)
 #include "web_gamepad_axis.h"
 #endif
+#if defined(ROLLER_VR_BUILD)
+#include "vr_ini_merge.h"
+#endif
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1267,6 +1270,20 @@ void InputRefreshDevices(void)
     SDL_free(pJoystickIds);
   } else {
     InputOpenWinMMDevices();
+#if defined(ROLLER_VR_BUILD)
+    if (g_bVRMode) {
+      /* WinMM never lists SDL virtual joysticks. The VR controller pad
+       * (vr_input_pad.c, which keeps SDL's joystick subsystem up itself) is
+       * opened next to the WinMM devices; ordinals from 64 stay clear of WinMM
+       * ids 0-15. */
+      SDL_JoystickID *pVRIds = SDL_GetJoysticks(&iCount);
+      for (int i = 0; pVRIds && i < iCount; ++i) {
+        if (SDL_IsJoystickVirtual(pVRIds[i]) && InputOpenDevice(pVRIds[i], 64 + i))
+          SDL_Log("VR input: opened the VR controller pad next to the WinMM devices");
+      }
+      SDL_free(pVRIds);
+    }
+#endif
   }
 #else
   {
@@ -1415,7 +1432,13 @@ void InputShutdown(void)
     InputPhoneShutdown();
 #endif
 #if defined(_WIN32)
+#if defined(ROLLER_VR_BUILD)
+  /* Under WinMM InputInit() took no SDL reference, so a quit here would drop the VR pad's. */
+  if (InputGetSDLInitFlags())
+    SDL_QuitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD);
+#else
   SDL_QuitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD);
+#endif
 #elif defined(IS_ANDROID)
   SDL_QuitSubSystem(SDL_INIT_SENSOR);
   SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
@@ -2400,6 +2423,166 @@ void InputApplyDefaultGamepadBindings(void)
   for (int iPlayer = 0; iPlayer < 2; ++iPlayer)
     InputApplyDefaultGamepadBindingsForPlayer(iPlayer);
 }
+#if defined(ROLLER_VR_BUILD)
+
+//-------------------------------------------------------------------------------------------------
+
+/* VR: default gamepad bindings exist only on a first run without ROLLER.INI
+ * (InputLoadConfig()), so an existing config with keyboard-only P1 bindings
+ * would leave the VR controller pad unable to drive. When none of player 1's six
+ * driving actions has a controller binding, bind the default layout (as in
+ * InputApplyDefaultGamepadBindingsForPlayer()) to the pad. The keyboard keeps
+ * working: each binding keeps its scancode (iKeyScancode = userkey[]) and
+ * InputGetActionPressed() checks userkey[] first. The cheat action is not bound:
+ * Start is pause and the safety exit in VR. Ordinal -1 matches the pad by GUID and
+ * name only (InputBindingMatchesDevice()), so the binding survives device order
+ * changes; InputSaveConfig() writes it as "ordinal=-1" and InputParseBindingField()
+ * reads it back the same. */
+int InputVRBindDefaultsToPadIfUnbound(SDL_JoystickID joyId)
+{
+  int iDeviceRef = -1;
+  int iOnPad = 0;
+  int iOnOther = 0;
+
+  for (int i = 0; joyId && i < s_iNumDevices; ++i) {
+    if (s_pDevices[i].joyId == joyId && s_pDevices[i].pGamepad) {
+      iDeviceRef = i;
+      break;
+    }
+  }
+  if (iDeviceRef < 0)
+    return -1;
+
+  for (int iAction = USERKEY_P1LEFT; iAction <= USERKEY_P1DOWNGEAR; ++iAction) {
+    const tInputBinding *pBinding = &g_inputBindings[iAction];
+    if (pBinding->eType == INPUT_BINDING_NONE || pBinding->eType == INPUT_BINDING_KEYBOARD)
+      continue;
+    if (pBinding->iDeviceRef == iDeviceRef)
+      ++iOnPad;
+    else
+      ++iOnOther;
+  }
+  if (iOnOther)
+    return 0;
+  if (iOnPad)
+    return 2; /* an earlier VR run (or the user) already bound P1 to the pad */
+
+  InputBindGamepadAxis(USERKEY_P1LEFT, iDeviceRef, SDL_GAMEPAD_AXIS_LEFTX, -1, INPUT_AXIS_CENTERED, 0);
+  InputBindGamepadAxis(USERKEY_P1RIGHT, iDeviceRef, SDL_GAMEPAD_AXIS_LEFTX, 1, INPUT_AXIS_CENTERED, 0);
+  InputBindGamepadAxis(USERKEY_P1UP, iDeviceRef, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, 1, INPUT_AXIS_PEDAL, 0);
+  InputBindGamepadAxis(USERKEY_P1DOWN, iDeviceRef, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, 1, INPUT_AXIS_PEDAL, 0);
+  InputBindGamepadButton(USERKEY_P1UPGEAR, iDeviceRef, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
+  InputBindGamepadButton(USERKEY_P1DOWNGEAR, iDeviceRef, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
+  for (int iAction = USERKEY_P1LEFT; iAction <= USERKEY_P1DOWNGEAR; ++iAction)
+    g_inputBindings[iAction].iOrdinal = -1;
+  InputResolveAllBindings();
+  return 1;
+}
+
+//-------------------------------------------------------------------------------------------------
+
+/* One "[Input]" line for an action, byte-identical to what InputSaveConfig()
+ * writes for it (keep the two in step). */
+static void InputVRFormatBindingLine(int iAction, char *szOut, size_t uiOutLen)
+{
+  const tInputBinding *pBinding = &g_inputBindings[iAction];
+  int iScancode = userkey[iAction] >= 0 && userkey[iAction] < 0x80 ? userkey[iAction] : s_actionInfo[iAction].iDefaultScancode;
+  char szGuid[64];
+  char szDevice[600];
+  int iLen;
+
+  SDL_GUIDToString(pBinding->guid, szGuid, sizeof(szGuid));
+  iLen = SDL_snprintf(szDevice, sizeof(szDevice), ";guid=%s", szGuid);
+  if (pBinding->szName[0] && iLen >= 0 && iLen < (int)sizeof(szDevice))
+    iLen += SDL_snprintf(szDevice + iLen, sizeof(szDevice) - iLen, ";name=%s", pBinding->szName);
+  if (pBinding->szPath[0] && iLen >= 0 && iLen < (int)sizeof(szDevice))
+    iLen += SDL_snprintf(szDevice + iLen, sizeof(szDevice) - iLen, ";path=%s", pBinding->szPath);
+  if (iLen >= 0 && iLen < (int)sizeof(szDevice))
+    SDL_snprintf(szDevice + iLen, sizeof(szDevice) - iLen, ";vendor=%u;product=%u;version=%u;ordinal=%d",
+                 pBinding->unVendor, pBinding->unProduct, pBinding->unVersion, pBinding->iOrdinal);
+
+  switch (pBinding->eType) {
+    case INPUT_BINDING_JOYSTICK_BUTTON:
+      SDL_snprintf(szOut, uiOutLen, "%s=button%s;index=%d;standard=%d;scancode=%d", s_actionInfo[iAction].szName,
+                   szDevice, pBinding->iInputIndex, pBinding->bGamepadInput ? 1 : 0, iScancode);
+      break;
+    case INPUT_BINDING_JOYSTICK_AXIS:
+      SDL_snprintf(szOut, uiOutLen,
+                   "%s=axis%s;index=%d;dir=%d;mode=%s;deadzone=%d;threshold=%d;rest=%d;invert=%d;standard=%d;scancode=%d",
+                   s_actionInfo[iAction].szName, szDevice, pBinding->iInputIndex, pBinding->iDirection,
+                   pBinding->eAxisMode == INPUT_AXIS_PEDAL ? "pedal" : "centered", pBinding->iDeadzone,
+                   pBinding->iThreshold, pBinding->iRestValue, pBinding->bInvert ? 1 : 0,
+                   pBinding->bGamepadInput ? 1 : 0, iScancode);
+      break;
+    case INPUT_BINDING_JOYSTICK_HAT:
+      SDL_snprintf(szOut, uiOutLen, "%s=hat%s;index=%d;dir=%d;scancode=%d", s_actionInfo[iAction].szName, szDevice,
+                   pBinding->iInputIndex, pBinding->iDirection, iScancode);
+      break;
+    default:
+      SDL_snprintf(szOut, uiOutLen, "%s=keyboard;scancode=%d", s_actionInfo[iAction].szName, iScancode);
+      break;
+  }
+}
+
+//-------------------------------------------------------------------------------------------------
+
+/* Persists player 1's six driving bindings (after InputVRBindDefaultsToPadIfUnbound()
+ * bound them to the pad) without rewriting the rest of ROLLER.INI: only those six
+ * lines change (each keeps its keyboard scancode), every other line stays byte for
+ * byte, the write is atomic and the original is copied to ROLLER.INI.bak first
+ * (only if that backup does not exist yet). Without a ROLLER.INI the game's own writer
+ * creates it. Returns 1 when the file now holds the bindings, 0 on failure (logged). */
+int InputVRSaveP1PadBindings(void)
+{
+  char aszLines[6][1024];
+  const char *apszLines[6];
+  const char *apszKeys[6];
+  char szPath[ROLLER_MAX_PATH];
+  char szBackup[ROLLER_MAX_PATH + 8];
+  VrIniMergeResult eResult;
+
+  for (int i = 0; i < 6; ++i) {
+    int iAction = USERKEY_P1LEFT + i;
+    InputVRFormatBindingLine(iAction, aszLines[i], sizeof(aszLines[i]));
+    apszLines[i] = aszLines[i];
+    apszKeys[i] = s_actionInfo[iAction].szName;
+  }
+
+  /* The same file InputLoadConfig() read: ROLLERfopen() falls back to a
+   * case-insensitive match off Windows (ROLLERfindpath()). */
+  SDL_strlcpy(szPath, "ROLLER.INI", sizeof(szPath));
+  {
+    FILE *fp = fopen(szPath, "rb");
+    if (fp) {
+      fclose(fp);
+    } else {
+      const char *szResolved = ROLLERfindpath("ROLLER.INI");
+      if (szResolved)
+        SDL_strlcpy(szPath, szResolved, sizeof(szPath));
+    }
+  }
+  SDL_snprintf(szBackup, sizeof(szBackup), "%s.bak", szPath);
+
+  eResult = vr_ini_merge_keys(szPath, szBackup, apszKeys, apszLines, 6);
+  switch (eResult) {
+    case VR_INI_MERGE_WRITTEN:
+      SDL_Log("VR input: saved the P1 VR controller pad bindings to %s (6 lines changed; original kept as %s; "
+              "the game's normal save on exit may rewrite the file)", szPath, szBackup);
+      return 1;
+    case VR_INI_MERGE_UNCHANGED:
+      SDL_Log("VR input: %s already holds the P1 VR controller pad bindings", szPath);
+      return 1;
+    case VR_INI_MERGE_MISSING:
+      InputSaveConfig();
+      SDL_Log("VR input: no ROLLER.INI; created it with the game's writer (P1 bound to the VR controller pad)");
+      return 1;
+    default:
+      SDL_Log("VR input: couldn't save the P1 VR controller pad bindings to %s; they apply to this run only",
+              szPath);
+      return 0;
+  }
+}
+#endif
 
 //-------------------------------------------------------------------------------------------------
 

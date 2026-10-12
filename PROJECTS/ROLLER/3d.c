@@ -34,6 +34,7 @@
 #if defined(ROLLER_VR_BUILD)
 #include "vr_runtime.h"
 #include "vr_diag.h"
+#include "vr_input_pad.h"
 #endif
 #include <SDL3/SDL.h>
 #if defined(__EMSCRIPTEN__)
@@ -635,12 +636,14 @@ static void print_usage(FILE *f, const char *argv0)
   cli_fprintf(f, " --out DIR              output directory for snapshot PNGs (--snapshot only)\n");
   cli_fprintf(f, " --gpu-parity BACKEND   run F-S1 parity (vulkan, direct3d12, or metal)\n");
 #if defined(ROLLER_VR_BUILD)
-  cli_fprintf(f, " --vr                    boot headless into VR mode (windowless GPU device, direct race start)\n");
+  cli_fprintf(f, " --vr                    boot into VR mode at the main menu (windowless GPU device)\n");
+  cli_fprintf(f, " --vr-demo               with --vr: run the attract-mode demo instead of the menu\n");
   cli_fprintf(f, " --vr-frames N           with --vr: quit cleanly after N stereo frames (default: run until closed)\n");
   cli_fprintf(f, " --vr-meters-to-world V  with --vr: world units per meter (default: derived from the car model)\n");
   cli_fprintf(f, " --vr-fake-head          with --vr: scripted head-pose sweep instead of the headset pose (testing)\n");
   cli_fprintf(f, " --vr-menu               with --vr: boot to the main menu instead of the intro replay; a small\n"
                  "                         desktop window takes keyboard focus (menus stay black in the headset)\n");
+  cli_fprintf(f, " --vr-fake-input         with --vr-menu: scripted VR controller input (menus, a short race, safety exit; testing)\n");
   cli_fprintf(f, " --vr-eye-dump-dir DIR   with --vr: write each eye's rendered frame to DIR as PNG every 90 frames\n");
   cli_fprintf(f, " --vr-eye-dump-every N   with --vr-eye-dump-dir: dump every N presented frames instead of 90\n");
   cli_fprintf(f, " --vr-eye-dump-from F    with --vr-eye-dump-dir: no dumps before presented frame F\n");
@@ -3087,7 +3090,15 @@ int main(int argc, const char **argv, const char **envp)
       g_bVRFakeHead = 1;
       consumed = 1;
     } else if (strcmp(argv[i], "--vr-menu") == 0) {
-      g_bVRMenuMode = 1;
+      g_bVRMenuMode = 1; /* the --vr default since M3; kept so existing command lines work */
+      consumed = 1;
+    } else if (strcmp(argv[i], "--vr-fake-input") == 0) {
+      g_bVRFakeInput = 1;
+      consumed = 1;
+    } else if (strcmp(argv[i], "--vr-demo") == 0) {
+      /* The pre-M3 plain --vr: the attract-mode demo race, no menu and no input. */
+      g_bVRMode = 1;
+      g_bVRDemoMode = 1;
       consumed = 1;
     } else if (strcmp(argv[i], "--vr-eye-dump-dir") == 0) {
       if (i + 1 < argc) {
@@ -3206,6 +3217,22 @@ int main(int argc, const char **argv, const char **envp)
     cli_fprintf(stderr, "ERROR: '--vr-menu' requires '--vr'\n");
     return 1;
   }
+  if (g_bVRMenuMode && g_bVRDemoMode) {
+    cli_fprintf(stderr, "ERROR: '--vr-menu' cannot be combined with '--vr-demo'\n");
+    return 1;
+  }
+  /* VR boots to the menu unless --vr-demo asks for the attract-mode demo. A
+   * --track-path without --vr-menu is the pre-M3 demo command line (the packaged
+   * RUN-VR-DEMO.bat, tools/vr-monado-run.sh) and keeps meaning the demo. */
+  if (g_bVRMode && !g_bVRMenuMode && g_szDirectTrackPath)
+    g_bVRDemoMode = 1;
+  if (g_bVRMode && !g_bVRDemoMode)
+    g_bVRMenuMode = 1;
+  /* After the menu default above, so that a plain '--vr --vr-fake-input' is accepted. */
+  if (g_bVRFakeInput && !g_bVRMenuMode) {
+    cli_fprintf(stderr, "ERROR: '--vr-fake-input' requires '--vr-menu' (or '--vr' without '--vr-demo')\n");
+    return 1;
+  }
 #endif
   if (szGpuParityBackend) {
     if (g_bSnapshotMode || g_szDirectTrackPath || g_bVRMode) {
@@ -3300,8 +3327,8 @@ int main(int argc, const char **argv, const char **envp)
     // probe are all interactive or audio-device-dependent: skip in headless
     // snapshot mode. The replay file is loaded directly from cwd later.
     // VR mode still needs FATDATA/tracks (it loads a real track, unlike
-    // snapshot's fixed replay/scene modes) but skips the audio-device probe
-    // the same way snapshot mode does, for headless operation.
+    // snapshot's fixed replay/scene modes) and runs the CD-track probe in its
+    // own VR-only block below.
 #if !defined(IS_ANDROID)
     InitFATDATA(whiplash_root);
 #endif
@@ -3309,6 +3336,10 @@ int main(int argc, const char **argv, const char **envp)
     InitTRACKS(whiplash_root);
     if (!g_bVRMode)
       ROLLERGetAudioInfo();
+#if defined(ROLLER_VR_BUILD)
+    if (g_bVRMode)
+      ROLLERGetAudioInfo(); /* CD / ripped-track probe (audio/trackNN.wav), as in the windowed path */
+#endif
   }
 
   ROLLERCommsSetCommandBase(0x686C6361u);          // Initialize communication system with base command
@@ -3382,6 +3413,8 @@ int main(int argc, const char **argv, const char **envp)
      * on it for free, confirmed by reading both). Must run AFTER
      * InputLoadConfig() above, the only other startup writer of this flag. */
     g_fDrawDistanceFraction = 1.0f;
+    SDL_Log("VR audio: soundon=%d musicon=%d SoundCard=%d MusicCard=%d MusicCD=%d MusicOS=%d MusicOPL=%d",
+            soundon, musicon, SoundCard, MusicCard, MusicCD, MusicOS, MusicOPL);
   }
   if (g_bVRMenuMode) {
     /* Player 1's driving keys after FATAL.INI, as PC set-1 scancodes
@@ -3390,6 +3423,18 @@ int main(int argc, const char **argv, const char **envp)
             "gear up=0x%02X gear down=0x%02X",
             userkey[USERKEY_P1LEFT], userkey[USERKEY_P1RIGHT], userkey[USERKEY_P1UP],
             userkey[USERKEY_P1DOWN], userkey[USERKEY_P1UPGEAR], userkey[USERKEY_P1DOWNGEAR]);
+    /* After InputLoadConfig(): ROLLER.INI's bindings are resolved and any switch
+     * to the WinMM backend has happened (InputParseWindowsBackendSetting()). */
+    int iBound = InputVRBindDefaultsToPadIfUnbound(vr_input_pad_id());
+    SDL_Log("VR input: P1 driving %s",
+            iBound == 1 ? "bound to the VR controller pad (left stick steers, right trigger accelerates, "
+                          "left trigger brakes, bumpers or grips shift); keyboard keys unchanged"
+            : iBound == 2 ? "already bound to the VR controller pad (ROLLER.INI)"
+            : iBound == 0 ? "keeps its existing controller bindings; the VR controller pad drives menus only "
+                            "(rebind it in the controls screen)"
+                          : "not bound to VR controllers (no VR controller pad)");
+    if (iBound == 1)
+      InputVRSaveP1PadBindings();
   }
 #endif
   loadcheatnames();
@@ -3492,6 +3537,9 @@ int main(int argc, const char **argv, const char **envp)
      * frontend.pal itself, so it needs one in place (NULL deref otherwise). */
     setpal("frontend.pal");
     eBootState = eFRONTEND_STATE_MAIN_MENU;
+    SDL_Log("VR menu mode: booting to the main menu (the --vr default; --vr-demo runs the attract-mode demo)");
+  } else if (g_bVRDemoMode) {
+    SDL_Log("VR demo mode (--vr-demo, or --vr with --track-path): attract-mode demo race, no menu and no input");
   }
 #endif
   frontend_run_game_loop(eBootState);
