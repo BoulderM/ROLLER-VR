@@ -15,6 +15,9 @@
 #include "vr_input.h"
 #include "vr_input_map.h"  /* VR_XR_VALVE_FRAME_EXTENSION_NAME */
 #include "vr_quad.h"
+#include "vr_quad_math.h"
+#include "png_writer.h"  /* RollerWriteRgbaPng -- menu quad PNG dump test hook */
+#include "sound.h"       /* pal_addr -- menu quad */
 
 #include <SDL3/SDL.h>
 
@@ -58,12 +61,23 @@ static VkCommandPool s_command_pool;
 static VkCommandBuffer s_command_buffer;
 /* VIEW reference space (head-locked), for quad layers anchored to the head. */
 static XrSpace s_view_space;
-/* Task-2 walking skeleton: a 64x64 solid-red quad 1 m ahead in LOCAL space,
- * submitted every frame to prove the vr_quad plumbing. Replaced by the menu
- * quad in a later task. */
-#define VR_TEST_QUAD_SIZE 64
-static VrQuad s_test_quad;
-static SDL_GPUTexture *s_test_quad_texture;
+/* The eye swapchains' resolved VkFormat (vr_init()), reused for quad layers. */
+static int64_t s_swapchain_format;
+/* Menu quad (--vr-menu): the menu picture (scrbuf through pal_addr, winw x
+ * winh) on a quad in LOCAL space, re-anchored in front of the head once per
+ * entry into a menu state. Its swapchain, texture and upload buffer are
+ * created on first use and re-created if winw/winh change; see
+ * vr_menu_quad_frame(). */
+static VrQuad s_menu_quad;
+static SDL_GPUTexture *s_menu_quad_texture;
+static SDL_GPUTransferBuffer *s_menu_quad_xfer;
+static int s_menu_quad_w, s_menu_quad_h;
+static XrPosef s_menu_quad_pose;
+static bool s_menu_quad_pose_valid;       /* s_menu_quad_pose holds a real head-derived anchor */
+static bool s_menu_quad_anchor_pending;   /* a menu state began and its anchor is not placed yet */
+static bool s_menu_quad_anchor_warned;    /* one WARN per pending anchor, not one per frame */
+static int s_menu_quad_last_state = -1;
+static int s_menu_quad_state_frames;      /* menu-quad frames submitted since the last state change */
 
 VkQueue vr_runtime_vk_queue(void) { return s_vk_queue; }
 VkCommandBuffer vr_runtime_copy_command_buffer(void) { return s_command_buffer; }
@@ -337,56 +351,262 @@ bool vr_prepare_vulkan(SDL_GPUVulkanOptions *out_options)
     return true;
 }
 
-/* Creates the test quad's source texture: VR_TEST_QUAD_SIZE square, solid red,
- * SAMPLER usage (vr_quad_submit()'s layout precondition), uploaded once and
- * waited on, so every later copy reads finished pixels. */
-static SDL_GPUTexture *vr_create_test_quad_texture(void)
-{
-    const Uint32 n = VR_TEST_QUAD_SIZE;
-    SDL_GPUTextureCreateInfo tex_info = {
-        .type = SDL_GPU_TEXTURETYPE_2D,
-        .format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-        .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER,
-        .width = n, .height = n, .layer_count_or_depth = 1, .num_levels = 1,
-    };
-    SDL_GPUTexture *tex = SDL_CreateGPUTexture(s_gpu, &tex_info);
-    if (!tex) {
-        vr_log_line("ERROR", "test quad: SDL_CreateGPUTexture failed: %s", SDL_GetError());
-        return NULL;
-    }
-    SDL_GPUTransferBufferCreateInfo tb_info = {
-        .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = n * n * 4,
-    };
-    SDL_GPUTransferBuffer *tb = SDL_CreateGPUTransferBuffer(s_gpu, &tb_info);
-    Uint8 *mapped = tb ? (Uint8 *)SDL_MapGPUTransferBuffer(s_gpu, tb, false) : NULL;
-    if (!mapped) {
-        vr_log_line("ERROR", "test quad: transfer buffer failed: %s", SDL_GetError());
-        if (tb) SDL_ReleaseGPUTransferBuffer(s_gpu, tb);
-        SDL_ReleaseGPUTexture(s_gpu, tex);
-        return NULL;
-    }
-    for (Uint32 i = 0; i < n * n; i++) {
-        mapped[i * 4 + 0] = 255; mapped[i * 4 + 1] = 0; mapped[i * 4 + 2] = 0; mapped[i * 4 + 3] = 255;
-    }
-    SDL_UnmapGPUTransferBuffer(s_gpu, tb);
+/* --- Menu quad ------------------------------------------------------------ */
 
+/* Indexed (palette 0..63 per channel) to opaque RGBA. A VR-owned copy of
+ * roller.c's static ConvertIndexedToRGBA() (the focus-window mirror's), kept
+ * separate so this file does not depend on roller.c internals. Alpha is 255:
+ * the menu quad is a solid picture, unlike the HUD (index 0 transparent). */
+static void vr_menu_quad_convert(const uint8 *indexed, const tColor *pal, uint8 *rgba, int w, int h)
+{
+    /* Palette to RGBA once (256 entries), then one 4-byte lookup per pixel. */
+    uint8 lut[256][4];
+    for (int i = 0; i < 256; ++i) {
+        lut[i][0] = (uint8)((pal[i].byR * 255) / 63);
+        lut[i][1] = (uint8)((pal[i].byG * 255) / 63);
+        lut[i][2] = (uint8)((pal[i].byB * 255) / 63);
+        lut[i][3] = 255;
+    }
+    for (int i = 0; i < w * h; ++i)
+        memcpy(rgba + (size_t)i * 4, lut[indexed[i]], 4);
+}
+
+/* What the quad's swapchain currently shows: the indexed picture and palette
+ * it was converted from, and the layer vr_quad_submit() filled for it. While
+ * the menu picture is unchanged (most menu frames), the layer is resubmitted
+ * as is -- OpenXR composites a swapchain's most recently released image, so no
+ * new acquire/copy is needed -- saving the CPU conversion, the upload and the
+ * copy's queue drain every such frame. */
+static uint8 *s_menu_quad_shown_scr;
+static tColor s_menu_quad_shown_pal[256];
+static bool s_menu_quad_shown_valid;
+static XrCompositionLayerQuad s_menu_quad_shown_layer;
+
+static void vr_menu_quad_release(void)
+{
+    vr_quad_destroy(&s_menu_quad);
+    if (s_menu_quad_texture) { SDL_ReleaseGPUTexture(s_gpu, s_menu_quad_texture); s_menu_quad_texture = NULL; }
+    if (s_menu_quad_xfer) { SDL_ReleaseGPUTransferBuffer(s_gpu, s_menu_quad_xfer); s_menu_quad_xfer = NULL; }
+    free(s_menu_quad_shown_scr);
+    s_menu_quad_shown_scr = NULL;
+    s_menu_quad_shown_valid = false;
+    s_menu_quad_w = s_menu_quad_h = 0;
+}
+
+/* (Re)creates the quad's swapchain, its SAMPLER-usage source texture (the
+ * layout precondition of vr_quad_submit()) and the upload buffer whenever the
+ * menu picture's size differs from the current one. winw/winh are stable in
+ * practice during menus; this only guards against a mode change. */
+static bool vr_menu_quad_ensure_size(int w, int h)
+{
+    static int s_failed_w, s_failed_h; /* don't retry (and re-log) a size that already failed */
+    if (s_menu_quad.swapchain && s_menu_quad_texture && s_menu_quad_xfer
+        && w == s_menu_quad_w && h == s_menu_quad_h)
+        return true;
+    if (w == s_failed_w && h == s_failed_h)
+        return false;
+    vr_menu_quad_release();
+    s_failed_w = w;
+    s_failed_h = h;
+    if (!vr_quad_init(s_session, s_swapchain_format, (uint32_t)w, (uint32_t)h, "menu", &s_menu_quad))
+        return false;
+    SDL_GPUTextureCreateInfo tex_info = {
+        .type = SDL_GPU_TEXTURETYPE_2D, .format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+        .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER,
+        .width = (Uint32)w, .height = (Uint32)h, .layer_count_or_depth = 1, .num_levels = 1,
+    };
+    s_menu_quad_texture = SDL_CreateGPUTexture(s_gpu, &tex_info);
+    SDL_GPUTransferBufferCreateInfo xfer_info = {
+        .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = (Uint32)(w * h * 4),
+    };
+    s_menu_quad_xfer = SDL_CreateGPUTransferBuffer(s_gpu, &xfer_info);
+    s_menu_quad_shown_scr = (uint8 *)malloc((size_t)w * (size_t)h);
+    if (!s_menu_quad_texture || !s_menu_quad_xfer || !s_menu_quad_shown_scr) {
+        vr_log_line("WARN", "menu quad: texture/transfer buffer creation failed: %s", SDL_GetError());
+        vr_menu_quad_release();
+        return false;
+    }
+    s_menu_quad_w = w;
+    s_menu_quad_h = h;
+    s_failed_w = s_failed_h = 0;
+    return true;
+}
+
+/* Frontend states that get the menu quad: everything VRMirrorMenuFrame()
+ * (roller.c) mirrors to the focus window, i.e. all but the race states
+ * (RACING, WINNER_RACE, PAUSE_OVERLAY) and NONE. */
+static bool vr_menu_quad_state_is_menu(int state)
+{
+    return state != (int)eFRONTEND_STATE_RACING
+        && state != (int)eFRONTEND_STATE_WINNER_RACE
+        && state != (int)eFRONTEND_STATE_PAUSE_OVERLAY
+        && state != (int)eFRONTEND_STATE_NONE;
+}
+
+/* Places s_menu_quad_pose 2 m ahead of the head along its heading, at head
+ * height, upright (yaw only: head pitch/roll at the moment the menu opens is
+ * dropped). Only called while an anchor is pending, i.e. after a menu-state
+ * entry (not every frame, so pose noise never moves an open menu). Returns
+ * false, leaving the previous anchor untouched, if the runtime has no valid
+ * head orientation AND position for this time (tracking loss, first frames). */
+static bool vr_menu_quad_reanchor(XrTime predicted_display_time)
+{
+    XrSpaceLocation loc = { .type = XR_TYPE_SPACE_LOCATION };
+    XrResult r = xrLocateSpace(s_view_space, s_local_space, predicted_display_time, &loc);
+    const XrSpaceLocationFlags need = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT;
+    if (XR_FAILED(r) || (loc.locationFlags & need) != need) {
+        if (!s_menu_quad_anchor_warned) {
+            s_menu_quad_anchor_warned = true;
+            vr_log_line("WARN", "menu quad: no valid head pose (XrResult=%d flags=0x%llx); %s until one arrives",
+                        (int)r, (unsigned long long)loc.locationFlags,
+                        s_menu_quad_pose_valid ? "keeping the previous anchor" : "using the default anchor");
+        }
+        return false;
+    }
+
+    float yaw = vr_quad_yaw_from_quat(loc.pose.orientation.x, loc.pose.orientation.y,
+                                      loc.pose.orientation.z, loc.pose.orientation.w);
+    const float head_pos[3] = { loc.pose.position.x, loc.pose.position.y, loc.pose.position.z };
+    float pos[3], quat[4];
+    vr_quad_yaw_anchor(head_pos, yaw, 2.0f, pos, quat);
+    s_menu_quad_pose.position = (XrVector3f){ pos[0], pos[1], pos[2] };
+    s_menu_quad_pose.orientation = (XrQuaternionf){ quat[0], quat[1], quat[2], quat[3] };
+    s_menu_quad_pose_valid = true;
+    vr_log_line("INFO", "menu quad: anchored for frontend state %d at (%.2f,%.2f,%.2f) yaw=%.1f deg",
+                (int)eFrontendCurrentState, pos[0], pos[1], pos[2], yaw * 180.0f / 3.14159265f);
+    return true;
+}
+
+/* --vr-eye-dump-dir test hook: reads the menu quad's source texture back and
+ * writes it as a PNG (R8G8B8A8, so no channel swizzle). Same download sequence
+ * as scene_render_gpu_dump_vr_eye_png(), on its own command buffer. */
+static bool vr_menu_quad_dump_png(const char *path)
+{
+    const Uint32 w = (Uint32)s_menu_quad_w, h = (Uint32)s_menu_quad_h;
+    SDL_GPUTransferBufferCreateInfo tbi = { .usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, .size = w * h * 4 };
+    SDL_GPUTransferBuffer *tb = SDL_CreateGPUTransferBuffer(s_gpu, &tbi);
+    if (!tb) return false;
     bool ok = false;
     SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(s_gpu);
     if (cmd) {
-        SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
-        SDL_GPUTextureTransferInfo src = { .transfer_buffer = tb };
-        SDL_GPUTextureRegion dst = { .texture = tex, .w = n, .h = n, .d = 1 };
-        SDL_UploadToGPUTexture(copy, &src, &dst, false);
-        SDL_EndGPUCopyPass(copy);
-        ok = SDL_SubmitGPUCommandBuffer(cmd) && SDL_WaitForGPUIdle(s_gpu);
+        SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cmd);
+        SDL_GPUTextureRegion src = { .texture = s_menu_quad_texture, .w = w, .h = h, .d = 1 };
+        SDL_GPUTextureTransferInfo dst = { .transfer_buffer = tb, .pixels_per_row = w, .rows_per_layer = h };
+        SDL_DownloadFromGPUTexture(cp, &src, &dst);
+        SDL_EndGPUCopyPass(cp);
+        SDL_GPUFence *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+        if (fence) {
+            if (SDL_WaitForGPUFences(s_gpu, true, &fence, 1)) {
+                const uint8 *mapped = (const uint8 *)SDL_MapGPUTransferBuffer(s_gpu, tb, false);
+                if (mapped) {
+                    ok = RollerWriteRgbaPng(path, mapped, (int)w, (int)h) == 0;
+                    SDL_UnmapGPUTransferBuffer(s_gpu, tb);
+                }
+            }
+            SDL_ReleaseGPUFence(s_gpu, fence);
+        }
     }
     SDL_ReleaseGPUTransferBuffer(s_gpu, tb);
-    if (!ok) {
-        vr_log_line("ERROR", "test quad: upload failed: %s", SDL_GetError());
-        SDL_ReleaseGPUTexture(s_gpu, tex);
-        return NULL;
+    return ok;
+}
+
+/* Counts a submitted menu-quad frame. --vr-eye-dump-dir test hook: one PNG of
+ * the quad's texture per menu-state entry, 45 frames in (so a fade-in has
+ * settled), named after the state and its entry count. */
+static void vr_menu_quad_count_frame(int state)
+{
+    static int s_dumps;
+    if (++s_menu_quad_state_frames != 45 || !g_szVREyeDumpDir[0])
+        return;
+    char dump_path[320];
+    SDL_snprintf(dump_path, sizeof(dump_path), "%s/menu%02d_state%d_%dx%d.png",
+                 g_szVREyeDumpDir, s_dumps++, state, s_menu_quad_w, s_menu_quad_h);
+    if (vr_menu_quad_dump_png(dump_path))
+        vr_log_line("INFO", "menu quad PNG dump: %s", dump_path);
+    else
+        vr_log_line("WARN", "menu quad PNG dump failed for %s: %s", dump_path, SDL_GetError());
+}
+
+/* Called once per OpenXR frame, after main_loop_iteration() (so scrbuf and
+ * eFrontendCurrentState are this tick's, and the eye copies that share
+ * vr_quad_submit()'s command buffer have finished). Fills *out_layer and
+ * returns true when a menu quad should be composited this frame. */
+static bool vr_menu_quad_frame(XrTime predicted_display_time, bool should_render,
+                               XrCompositionLayerQuad *out_layer)
+{
+    const int state = (int)eFrontendCurrentState;
+    const bool is_menu = vr_menu_quad_state_is_menu(state);
+    if (state != s_menu_quad_last_state) {
+        /* Edge: the frontend state changed. Entering a menu state (from a race
+         * or from another menu screen) asks for one new anchor. */
+        s_menu_quad_last_state = state;
+        s_menu_quad_state_frames = 0;
+        s_menu_quad_anchor_pending = is_menu;
+        s_menu_quad_anchor_warned = false;
     }
-    return tex;
+    if (!is_menu || !should_render)
+        return false;
+    if (s_menu_quad_anchor_pending && vr_menu_quad_reanchor(predicted_display_time))
+        s_menu_quad_anchor_pending = false;
+    if (!s_menu_quad_pose_valid) {
+        /* No head pose has ever been valid: 2 m straight ahead of the LOCAL
+         * origin (which the runtime puts at the initial head position), at
+         * that height. Replaced by a real anchor as soon as one arrives. */
+        s_menu_quad_pose = (XrPosef){ .orientation = { .w = 1.0f }, .position = { 0.0f, 0.0f, -2.0f } };
+    }
+
+    if (!scrbuf || !pal_addr || winw <= 0 || winh <= 0 || !vr_menu_quad_ensure_size(winw, winh))
+        return false;
+
+    const size_t npix = (size_t)winw * (size_t)winh;
+    if (s_menu_quad_shown_valid
+        && memcmp(s_menu_quad_shown_scr, scrbuf, npix) == 0
+        && memcmp(s_menu_quad_shown_pal, pal_addr, sizeof(s_menu_quad_shown_pal)) == 0) {
+        *out_layer = s_menu_quad_shown_layer;
+        out_layer->pose = s_menu_quad_pose; /* may have been re-anchored since */
+        vr_menu_quad_count_frame(state);
+        return true;
+    }
+
+    /* CPU convert into the upload buffer (cycled: the previous frame's upload
+     * may still be referenced), then upload on SDL_GPU's queue. No wait is
+     * needed before vr_quad_submit(): its first barrier orders its copy after
+     * every earlier submission on that same queue (see vr_quad.h). */
+    uint8 *mapped = (uint8 *)SDL_MapGPUTransferBuffer(s_gpu, s_menu_quad_xfer, true);
+    if (!mapped)
+        return false;
+    vr_menu_quad_convert(scrbuf, pal_addr, mapped, winw, winh);
+    SDL_UnmapGPUTransferBuffer(s_gpu, s_menu_quad_xfer);
+    SDL_GPUCommandBuffer *upload_cmd = SDL_AcquireGPUCommandBuffer(s_gpu);
+    if (!upload_cmd)
+        return false;
+    SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(upload_cmd);
+    SDL_GPUTextureTransferInfo src_info = { .transfer_buffer = s_menu_quad_xfer,
+                                            .pixels_per_row = (Uint32)winw, .rows_per_layer = (Uint32)winh };
+    SDL_GPUTextureRegion dst_region = { .texture = s_menu_quad_texture,
+                                        .w = (Uint32)winw, .h = (Uint32)winh, .d = 1 };
+    SDL_UploadToGPUTexture(cp, &src_info, &dst_region, false);
+    SDL_EndGPUCopyPass(cp);
+    if (!SDL_SubmitGPUCommandBuffer(upload_cmd)) {
+        vr_log_line("WARN", "menu quad: upload submit failed: %s", SDL_GetError());
+        return false;
+    }
+
+    /* 2.3 m wide (about 60 degrees across at 2 m), height from the picture's
+     * aspect. Opaque. */
+    const float width_m = 2.3f;
+    bool ok = vr_quad_submit(&s_menu_quad, s_menu_quad_texture, (uint32_t)winw, (uint32_t)winh,
+                             s_local_space, s_menu_quad_pose,
+                             (XrExtent2Df){ width_m, width_m * (float)winh / (float)winw },
+                             false, out_layer);
+    s_menu_quad_shown_valid = ok;
+    if (ok) {
+        memcpy(s_menu_quad_shown_scr, scrbuf, npix);
+        memcpy(s_menu_quad_shown_pal, pal_addr, sizeof(s_menu_quad_shown_pal));
+        s_menu_quad_shown_layer = *out_layer;
+        vr_menu_quad_count_frame(state);
+    }
+    return ok;
 }
 
 bool vr_init(void)
@@ -646,17 +866,9 @@ bool vr_init(void)
         return false;
     }
 
-    /* --- 6c. Quad layers: same swapchain format as the eyes --- */
-    if (!vr_quad_init(s_session, (int64_t)swapchain_format, VR_TEST_QUAD_SIZE, VR_TEST_QUAD_SIZE,
-                      "test", &s_test_quad)) {
-        fail("vr_quad_init(test) failed");
-        return false;
-    }
-    s_test_quad_texture = vr_create_test_quad_texture();
-    if (!s_test_quad_texture) {
-        fail("creating the test quad texture failed");
-        return false;
-    }
+    /* --- 6c. Quad layers: same swapchain format as the eyes, created on first
+     * use (vr_menu_quad_ensure_size()) --- */
+    s_swapchain_format = (int64_t)swapchain_format;
 
     /* --- 7. Vulkan command pool/buffer for the clear commands --- */
     VkCommandPoolCreateInfo pool_create_info = {
@@ -842,11 +1054,7 @@ void vr_shutdown(void)
     vkDestroyCommandPool(s_vk_device, s_command_pool, NULL);
     s_command_buffer = VK_NULL_HANDLE;
     s_command_pool = VK_NULL_HANDLE;
-    if (s_test_quad_texture) {
-        SDL_ReleaseGPUTexture(s_gpu, s_test_quad_texture);
-        s_test_quad_texture = NULL;
-    }
-    vr_quad_destroy(&s_test_quad);
+    vr_menu_quad_release();
 
     for (Uint32 i = 0; i < s_view_count; i++) {
         xrDestroySwapchain(s_swapchains[i]);
@@ -1275,16 +1483,6 @@ bool vr_run_frame(void)
      * main_loop_iteration()'s UpdateSDL() pumps SDL and so publishes it. */
     vr_input_frame(vr_fsm_is_focused(&s_fsm));
 
-    /* Test quad (Task 2 walking skeleton): 0.3 m square, 1 m ahead of the LOCAL
-     * origin, opaque. Copied before main_loop_iteration() so its use of the
-     * shared copy command buffer is finished before the eye copies run. A
-     * local, so it lives until xrEndFrame() below has returned. */
-    XrCompositionLayerQuad test_quad_layer;
-    bool have_test_quad = vr_quad_submit(&s_test_quad, s_test_quad_texture,
-                                         VR_TEST_QUAD_SIZE, VR_TEST_QUAD_SIZE, s_local_space,
-                                         (XrPosef){ .orientation = { .w = 1.0f }, .position = { 0.0f, 0.0f, -1.0f } },
-                                         (XrExtent2Df){ 0.3f, 0.3f }, false, &test_quad_layer);
-
     s_should_render_this_tick = s_frame_state.shouldRender;
     if (s_should_render_this_tick) {
         if (!vr_locate_views(s_frame_state.predictedDisplayTime, s_frame_views)) {
@@ -1357,6 +1555,14 @@ bool vr_run_frame(void)
         }
     }
 
+    /* Menu quad (--vr-menu): after main_loop_iteration(), so it shows this
+     * tick's menu picture and its copy cannot overlap the eye copies (both
+     * borrow the same command buffer). A local, so it lives until
+     * xrEndFrame() below has returned. */
+    XrCompositionLayerQuad menu_quad_layer;
+    bool have_menu_quad = g_bVRMenuMode
+        && vr_menu_quad_frame(s_frame_state.predictedDisplayTime, s_frame_state.shouldRender, &menu_quad_layer);
+
     XrCompositionLayerProjection projection_layer = {
         .type = XR_TYPE_COMPOSITION_LAYER_PROJECTION,
         .space = s_local_space,
@@ -1371,8 +1577,8 @@ bool vr_run_frame(void)
     uint32_t submitted_layer_count = 0;
     if (s_frame_view_count_for_layer > 0)
         submitted_layers[submitted_layer_count++] = (const XrCompositionLayerBaseHeader *)&projection_layer;
-    if (have_test_quad)
-        submitted_layers[submitted_layer_count++] = (const XrCompositionLayerBaseHeader *)&test_quad_layer;
+    if (have_menu_quad)
+        submitted_layers[submitted_layer_count++] = (const XrCompositionLayerBaseHeader *)&menu_quad_layer;
     XrFrameEndInfo frame_end_info = {
         .type = XR_TYPE_FRAME_END_INFO,
         .displayTime = s_frame_state.predictedDisplayTime,
