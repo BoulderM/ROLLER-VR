@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <SDL3/SDL_gpu.h>
+#include <vulkan/vulkan.h>
 #include <openxr/openxr.h>
 #include "scene_render_types.h"
 
@@ -107,5 +108,13 @@ bool vr_run_frame(void);
  * for the first eye, to avoid discarding the caller's already-acquired,
  * not-yet-submitted command buffer. */
 void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iDriveView);
+
+/* SDL_GPU's Vulkan queue and the runtime's one copy command buffer (from a
+ * VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT pool), as the eye copy uses
+ * them. vr_quad_submit() (vr_quad.c) borrows both for its own copy: reset,
+ * record, submit, vkQueueWaitIdle -- never freed or kept in flight by it.
+ * Valid between vr_init() and vr_shutdown(). */
+VkQueue vr_runtime_vk_queue(void);
+VkCommandBuffer vr_runtime_copy_command_buffer(void);
 
 #endif /* VR_RUNTIME_H */

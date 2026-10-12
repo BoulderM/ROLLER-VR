@@ -14,6 +14,7 @@
 #include "vr_camera_compose.h"
 #include "vr_input.h"
 #include "vr_input_map.h"  /* VR_XR_VALVE_FRAME_EXTENSION_NAME */
+#include "vr_quad.h"
 
 #include <SDL3/SDL.h>
 
@@ -55,6 +56,17 @@ static XrSwapchain *s_swapchains;
 static XrSpace s_local_space;
 static VkCommandPool s_command_pool;
 static VkCommandBuffer s_command_buffer;
+/* VIEW reference space (head-locked), for quad layers anchored to the head. */
+static XrSpace s_view_space;
+/* Task-2 walking skeleton: a 64x64 solid-red quad 1 m ahead in LOCAL space,
+ * submitted every frame to prove the vr_quad plumbing. Replaced by the menu
+ * quad in a later task. */
+#define VR_TEST_QUAD_SIZE 64
+static VrQuad s_test_quad;
+static SDL_GPUTexture *s_test_quad_texture;
+
+VkQueue vr_runtime_vk_queue(void) { return s_vk_queue; }
+VkCommandBuffer vr_runtime_copy_command_buffer(void) { return s_command_buffer; }
 static VrSessionFsm s_fsm; /* session lifecycle decisions, see vr_session_fsm.h */
 static VrVkBinding s_vk_binding = VR_VK_BINDING_NONE;
 static VrExtList s_vk_instance_exts;
@@ -325,6 +337,58 @@ bool vr_prepare_vulkan(SDL_GPUVulkanOptions *out_options)
     return true;
 }
 
+/* Creates the test quad's source texture: VR_TEST_QUAD_SIZE square, solid red,
+ * SAMPLER usage (vr_quad_submit()'s layout precondition), uploaded once and
+ * waited on, so every later copy reads finished pixels. */
+static SDL_GPUTexture *vr_create_test_quad_texture(void)
+{
+    const Uint32 n = VR_TEST_QUAD_SIZE;
+    SDL_GPUTextureCreateInfo tex_info = {
+        .type = SDL_GPU_TEXTURETYPE_2D,
+        .format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+        .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER,
+        .width = n, .height = n, .layer_count_or_depth = 1, .num_levels = 1,
+    };
+    SDL_GPUTexture *tex = SDL_CreateGPUTexture(s_gpu, &tex_info);
+    if (!tex) {
+        vr_log_line("ERROR", "test quad: SDL_CreateGPUTexture failed: %s", SDL_GetError());
+        return NULL;
+    }
+    SDL_GPUTransferBufferCreateInfo tb_info = {
+        .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = n * n * 4,
+    };
+    SDL_GPUTransferBuffer *tb = SDL_CreateGPUTransferBuffer(s_gpu, &tb_info);
+    Uint8 *mapped = tb ? (Uint8 *)SDL_MapGPUTransferBuffer(s_gpu, tb, false) : NULL;
+    if (!mapped) {
+        vr_log_line("ERROR", "test quad: transfer buffer failed: %s", SDL_GetError());
+        if (tb) SDL_ReleaseGPUTransferBuffer(s_gpu, tb);
+        SDL_ReleaseGPUTexture(s_gpu, tex);
+        return NULL;
+    }
+    for (Uint32 i = 0; i < n * n; i++) {
+        mapped[i * 4 + 0] = 255; mapped[i * 4 + 1] = 0; mapped[i * 4 + 2] = 0; mapped[i * 4 + 3] = 255;
+    }
+    SDL_UnmapGPUTransferBuffer(s_gpu, tb);
+
+    bool ok = false;
+    SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(s_gpu);
+    if (cmd) {
+        SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
+        SDL_GPUTextureTransferInfo src = { .transfer_buffer = tb };
+        SDL_GPUTextureRegion dst = { .texture = tex, .w = n, .h = n, .d = 1 };
+        SDL_UploadToGPUTexture(copy, &src, &dst, false);
+        SDL_EndGPUCopyPass(copy);
+        ok = SDL_SubmitGPUCommandBuffer(cmd) && SDL_WaitForGPUIdle(s_gpu);
+    }
+    SDL_ReleaseGPUTransferBuffer(s_gpu, tb);
+    if (!ok) {
+        vr_log_line("ERROR", "test quad: upload failed: %s", SDL_GetError());
+        SDL_ReleaseGPUTexture(s_gpu, tex);
+        return NULL;
+    }
+    return tex;
+}
+
 bool vr_init(void)
 {
     if (s_instance == XR_NULL_HANDLE) {
@@ -568,6 +632,32 @@ bool vr_init(void)
         return false;
     }
 
+    /* VIEW space: tracks the head, so a layer expressed in it is head-locked by
+     * the runtime itself (no per-frame pose math). Identity pose, as above. */
+    s_view_space = XR_NULL_HANDLE;
+    XrReferenceSpaceCreateInfo view_space_info = {
+        .type = XR_TYPE_REFERENCE_SPACE_CREATE_INFO,
+        .referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW,
+        .poseInReferenceSpace = { .orientation = { .w = 1.0f }, .position = { 0 } },
+    };
+    xr_result = xrCreateReferenceSpace(s_session, &view_space_info, &s_view_space);
+    if (XR_FAILED(xr_result)) {
+        fail_xr("xrCreateReferenceSpace (VIEW) failed", xr_result);
+        return false;
+    }
+
+    /* --- 6c. Quad layers: same swapchain format as the eyes --- */
+    if (!vr_quad_init(s_session, (int64_t)swapchain_format, VR_TEST_QUAD_SIZE, VR_TEST_QUAD_SIZE,
+                      "test", &s_test_quad)) {
+        fail("vr_quad_init(test) failed");
+        return false;
+    }
+    s_test_quad_texture = vr_create_test_quad_texture();
+    if (!s_test_quad_texture) {
+        fail("creating the test quad texture failed");
+        return false;
+    }
+
     /* --- 7. Vulkan command pool/buffer for the clear commands --- */
     VkCommandPoolCreateInfo pool_create_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -720,7 +810,7 @@ static void vr_end_session_cleanly(void)
 /* Number of ticks that actually rendered and submitted a stereo layer, for
  * the --vr-frames N bounded-run option (g_iVRMaxFrames) and progress logging. */
 static int s_vr_frames_presented = 0;
-static int s_vr_empty_frames = 0;   /* ticks submitted with layerCount = 0 */
+static int s_vr_empty_frames = 0;   /* ticks submitted without a projection layer */
 /* Run-length logging of consecutive empty ticks (menus, loading, shouldRender
  * false): one line when a run starts, a progress line about every
  * VR_EMPTY_RUN_PROGRESS_MS during it, and one line when the next rendered
@@ -752,6 +842,11 @@ void vr_shutdown(void)
     vkDestroyCommandPool(s_vk_device, s_command_pool, NULL);
     s_command_buffer = VK_NULL_HANDLE;
     s_command_pool = VK_NULL_HANDLE;
+    if (s_test_quad_texture) {
+        SDL_ReleaseGPUTexture(s_gpu, s_test_quad_texture);
+        s_test_quad_texture = NULL;
+    }
+    vr_quad_destroy(&s_test_quad);
 
     for (Uint32 i = 0; i < s_view_count; i++) {
         xrDestroySwapchain(s_swapchains[i]);
@@ -764,6 +859,9 @@ void vr_shutdown(void)
 
     xrDestroySpace(s_local_space);
     s_local_space = XR_NULL_HANDLE;
+    if (s_view_space != XR_NULL_HANDLE)
+        xrDestroySpace(s_view_space);
+    s_view_space = XR_NULL_HANDLE;
 
     /* frontend_shutdown_finish() (3d.c) -- this function's only caller -- is
      * reached two ways. (1) Game-initiated quit: from inside main_loop_iteration(),
@@ -1177,6 +1275,16 @@ bool vr_run_frame(void)
      * main_loop_iteration()'s UpdateSDL() pumps SDL and so publishes it. */
     vr_input_frame(vr_fsm_is_focused(&s_fsm));
 
+    /* Test quad (Task 2 walking skeleton): 0.3 m square, 1 m ahead of the LOCAL
+     * origin, opaque. Copied before main_loop_iteration() so its use of the
+     * shared copy command buffer is finished before the eye copies run. A
+     * local, so it lives until xrEndFrame() below has returned. */
+    XrCompositionLayerQuad test_quad_layer;
+    bool have_test_quad = vr_quad_submit(&s_test_quad, s_test_quad_texture,
+                                         VR_TEST_QUAD_SIZE, VR_TEST_QUAD_SIZE, s_local_space,
+                                         (XrPosef){ .orientation = { .w = 1.0f }, .position = { 0.0f, 0.0f, -1.0f } },
+                                         (XrExtent2Df){ 0.3f, 0.3f }, false, &test_quad_layer);
+
     s_should_render_this_tick = s_frame_state.shouldRender;
     if (s_should_render_this_tick) {
         if (!vr_locate_views(s_frame_state.predictedDisplayTime, s_frame_views)) {
@@ -1255,15 +1363,22 @@ bool vr_run_frame(void)
         .viewCount = s_frame_view_count_for_layer,   /* 0 if updatescreen()'s VR branch never ran this tick */
         .views = s_projection_views,
     };
-    const XrCompositionLayerBaseHeader *submitted_layers[1] = {
-        (const XrCompositionLayerBaseHeader *)&projection_layer,
-    };
+    /* Layer order is back to front (OpenXR: layers are composited in the
+     * order given, first is bottom-most): the projection layer first, quads
+     * on top. A projection layer with viewCount 0 is invalid, so it is only
+     * included when the race view rendered this tick. */
+    const XrCompositionLayerBaseHeader *submitted_layers[2];
+    uint32_t submitted_layer_count = 0;
+    if (s_frame_view_count_for_layer > 0)
+        submitted_layers[submitted_layer_count++] = (const XrCompositionLayerBaseHeader *)&projection_layer;
+    if (have_test_quad)
+        submitted_layers[submitted_layer_count++] = (const XrCompositionLayerBaseHeader *)&test_quad_layer;
     XrFrameEndInfo frame_end_info = {
         .type = XR_TYPE_FRAME_END_INFO,
         .displayTime = s_frame_state.predictedDisplayTime,
         .environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE,
-        .layerCount = s_frame_view_count_for_layer > 0 ? 1u : 0u,
-        .layers = s_frame_view_count_for_layer > 0 ? submitted_layers : NULL,
+        .layerCount = submitted_layer_count,
+        .layers = submitted_layer_count > 0 ? submitted_layers : NULL,
     };
     XrResult end_result = xrEndFrame(s_session, &frame_end_info);
     s_frame_open = false;
@@ -1291,11 +1406,12 @@ bool vr_run_frame(void)
             game_render_get_draw_stats(g_pGameRenderer, &drawCmdCount, &vertexCount);
             double cpuFrameMs = (double)(cpu_end_ticks - s_cpuFrameStartTicks) * 1000.0
                               / (double)SDL_GetPerformanceFrequency();
-            vr_log_line("INFO", "frame %d submitted (views=%u layerCount=1) "
+            vr_log_line("INFO", "frame %d submitted (views=%u layerCount=%u) "
                                 "view[0] pos=(%.3f,%.3f,%.3f) ori=(%.3f,%.3f,%.3f,%.3f) "
                                 "chunks=%d cars=%d buildings=%d drawCmds=%d vertices=%d cpuMs=%.2f "
                                 "chunksBeyondFar=%d/%d maxChunkDepth=%.0f effects=%d",
                         s_vr_frames_presented, (unsigned)s_frame_view_count_for_layer,
+                        (unsigned)submitted_layer_count,
                         s_frame_views[0].pose.position.x, s_frame_views[0].pose.position.y,
                         s_frame_views[0].pose.position.z,
                         s_frame_views[0].pose.orientation.x, s_frame_views[0].pose.orientation.y,
@@ -1338,7 +1454,7 @@ bool vr_run_frame(void)
         if (s_vr_empty_run_ticks == 0) {
             s_vr_empty_run_start_ms = now_ms;
             s_vr_empty_run_last_progress_ms = now_ms;
-            vr_log_line("INFO", "empty run started: ticks submitted with layerCount=0 (after %d presented "
+            vr_log_line("INFO", "empty run started: ticks submitted without a projection layer (after %d presented "
                                 "frames, shouldRender=%d, frontend state=%d, racing=%d)",
                         s_vr_frames_presented, (int)s_frame_state.shouldRender,
                         (int)eFrontendCurrentState, (int)racing);

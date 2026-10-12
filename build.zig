@@ -297,6 +297,7 @@ pub fn build(b: *std.Build) void {
                 "PROJECTS/ROLLER/vr_input.c",
                 "PROJECTS/ROLLER/vr_ini_merge.c",
                 "PROJECTS/ROLLER/vr_fake_input.c",
+                "PROJECTS/ROLLER/vr_quad.c",
             },
         });
 
