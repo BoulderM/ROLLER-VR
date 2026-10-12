@@ -7,7 +7,10 @@
 #define FAKE_GAP_MS          240u
 #define FAKE_NAV_COUNT          8
 #define FAKE_SETTLE_MS       2000u
-#define FAKE_DWELL_MS        1500u
+#define FAKE_DWELL_MS        4000u /* was 1500; a quad layer can roughly halve menu fps on a slow
+                                     * software compositor (measured on fatal-gpu/Monado, M4), which
+                                     * made the harness's own re-entry detection miss the first
+                                     * nav-down press at 1500ms; 4000ms gave 3/3 clean runs there */
 #define FAKE_WAIT_TIMEOUT_MS 20000u
 #define FAKE_RACE_TIMEOUT_MS 60000u
 #define FAKE_COUNTDOWN_MS    12000u
