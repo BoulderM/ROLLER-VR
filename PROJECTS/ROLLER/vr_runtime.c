@@ -26,6 +26,7 @@
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,6 +40,7 @@
 #include "view.h"    /* calculateview() -- see vr_present_stereo_frame() below */
 #include "frontend.h"  /* quit_game, racing -- --vr-frames bounded-run exit */
 #include "car.h"       /* Car[], CarBox, numcars -- vr_resolve_meters_to_world(), periodic diag log */
+#include "control.h"   /* race_started -- race diag log */
 #include "drawtrk3.h"  /* TrackSize -- periodic diag log (chunk count) */
 #include "building.h"  /* NumVisibleBuildings -- periodic diag log (building count) */
 #include "loadtrak.h"   /* TRAK_LEN -- far-plane diag (track chunks beyond the eye far plane) */
@@ -1745,6 +1747,32 @@ bool vr_run_frame(void)
                         s_vr_frames_presented, player1_car,
                         (double)pPlayer->pos.fX, (double)pPlayer->pos.fY, (double)pPlayer->pos.fZ,
                         (double)pPlayer->fFinalSpeed, (int)eFrontendCurrentState, (int)racing);
+            /* Why a car stands still: a race that has not started yet, a car in neutral (gear -1) or
+             * reverse (-2), a throttle that is down but still inside the engine-start delay. */
+            vr_log_line("INFO", "frame %d player car state: race_started=%d countdown=%d gear=%d throttle=%d "
+                                "engine_start_timer=%d rpm=%.2f power=%.1f base_speed=%.2f",
+                        s_vr_frames_presented, race_started, countdown, (int)(int8_t)pPlayer->byGearAyMax,
+                        (int)pPlayer->byThrottlePressed, (int)pPlayer->byEngineStartTimer,
+                        (double)pPlayer->fRPMRatio, (double)pPlayer->fPower, (double)pPlayer->fBaseSpeed);
+        }
+        /* Every gear change of the player's car during a race, with the moment it happened. A VR
+         * controller that shifts by accident (a grip or bumper pressed while holding the pad) put
+         * the car into neutral or reverse in the M4 test, which looks exactly like "the throttle
+         * does nothing", and nothing else in the log said so. */
+        if (g_bVRMenuMode) {
+            static int s_last_gear = INT_MIN;
+            if (eFrontendCurrentState == eFRONTEND_STATE_RACING) {
+                const tCar *pPlayer = &Car[player1_car];
+                int gear = (int)(int8_t)pPlayer->byGearAyMax;
+                if (gear != s_last_gear) {
+                    vr_log_line("INFO", "race: player gear %d -> %d (race_started=%d countdown=%d speed=%.2f throttle=%d)",
+                                s_last_gear == INT_MIN ? 0 : s_last_gear, gear, race_started, countdown,
+                                (double)pPlayer->fFinalSpeed, (int)pPlayer->byThrottlePressed);
+                    s_last_gear = gear;
+                }
+            } else {
+                s_last_gear = INT_MIN;
+            }
         }
         /* --vr-frames N: after N frames actually reached the compositor, ask
          * the game to quit through its own shutdown path (same flags the
