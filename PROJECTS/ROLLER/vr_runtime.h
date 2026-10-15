@@ -117,4 +117,9 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
 VkQueue vr_runtime_vk_queue(void);
 VkCommandBuffer vr_runtime_copy_command_buffer(void);
 
+/* Asks for a screenshot (the both-thumbstick-clicks gesture, vr_input.c): the next
+ * tick that renders saves both eyes' images (plus the HUD, or the menu picture) as
+ * PNGs in a "screenshots" folder next to the executable. Safe to call any time. */
+void vr_request_screenshot(void);
+
 #endif /* VR_RUNTIME_H */

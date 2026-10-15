@@ -16,6 +16,9 @@
 #define FAKE_COUNTDOWN_MS    12000u
 #define FAKE_DRIVE_MS        15000u
 #define FAKE_RELEASE_MS       1000u
+#define FAKE_SHOT_PRESS_MS     300u /* both thumbstick clicks: the screenshot gesture */
+#define FAKE_SHOT_1_MS        3000u /* into the drive step */
+#define FAKE_SHOT_2_MS       12000u
 #define FAKE_EXIT_HOLD_MS     2600u /* > VR_SAFETY_HOLD_MS + the 250 ms grace */
 
 enum {
@@ -96,6 +99,9 @@ static int run_step(const VrFakeInput *f, VrFakeScreen screen, uint64_t now, VrI
         out->right_trigger = 1.0f;
         if (t >= 5000 && t < 8000) out->left_stick_x = -0.7f;
         if (t >= 8000 && t < 11000) out->left_stick_x = 0.7f;
+        if ((t >= FAKE_SHOT_1_MS && t < FAKE_SHOT_1_MS + FAKE_SHOT_PRESS_MS)
+            || (t >= FAKE_SHOT_2_MS && t < FAKE_SHOT_2_MS + FAKE_SHOT_PRESS_MS))
+            out->left_stick_click = out->right_stick_click = true;
         if (t >= FAKE_DRIVE_MS) next = S_RELEASE;
         break;
     case S_RELEASE:

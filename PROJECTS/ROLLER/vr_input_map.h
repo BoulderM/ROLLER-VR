@@ -75,7 +75,8 @@ typedef struct {
 typedef enum {
     VR_INPUT_EVENT_NONE = 0,
     VR_INPUT_EVENT_RECENTER, /* clean Back+Start tap released before VR_SAFETY_HOLD_MS (consumed by M4) */
-    VR_INPUT_EVENT_QUIT      /* safety exit: request a clean quit */
+    VR_INPUT_EVENT_QUIT,     /* safety exit: request a clean quit */
+    VR_INPUT_EVENT_SCREENSHOT /* both thumbstick clicks down together: save the eye images */
 } VrInputEvent;
 
 typedef struct {
@@ -92,6 +93,8 @@ typedef struct {
     /* Profiles without Back: Start held alone. */
     uint32_t start_only_ms;
     bool start_only_fired;
+    /* Screenshot gesture: set when it fires, cleared once both clicks are released. */
+    bool shot_disarmed;
 } VrInputMapState;
 
 /* --- OpenXR action set and binding table ---------------------------------- */

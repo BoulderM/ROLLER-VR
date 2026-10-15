@@ -898,6 +898,60 @@ static void test_pad_index_literals(void)
     CHECK(!out.buttons[5]);
 }
 
+/* --- Screenshot gesture (both thumbstick clicks) ------------------------------ */
+
+static void test_screenshot_combo(void)
+{
+    VrInputMapState s;
+    VrPadState out;
+    VrInputActions none, left, both;
+    memset(&none, 0, sizeof none);
+    memset(&left, 0, sizeof left);
+    memset(&both, 0, sizeof both);
+    left.left_stick_click = true;
+    both.left_stick_click = both.right_stick_click = true;
+
+    for (int has_back = 0; has_back <= 1; ++has_back) { /* Touch (no Back) and Frame alike */
+        vr_input_map_init(&s);
+
+        /* One click alone is not the gesture, and still reaches the pad. */
+        CHECK(step(&s, left, true, has_back, 10, &out) == VR_INPUT_EVENT_NONE);
+        expect_only_button(&out, VR_PAD_BUTTON_LEFT_STICK);
+
+        /* The second click completes it: one event, whichever click came first, and the
+         * clicks stay on the pad (the game binds neither). Holding does not repeat it. */
+        CHECK(step(&s, both, true, has_back, 10, &out) == VR_INPUT_EVENT_SCREENSHOT);
+        CHECK(out.buttons[VR_PAD_BUTTON_LEFT_STICK] && out.buttons[VR_PAD_BUTTON_RIGHT_STICK]);
+        CHECK(step(&s, both, true, has_back, 10, &out) == VR_INPUT_EVENT_NONE);
+        CHECK(step(&s, both, true, has_back, 100, &out) == VR_INPUT_EVENT_NONE);
+
+        /* Letting go of one click and pressing it again while the other is still down does
+         * not fire again: the gesture re-arms only once both are released. */
+        CHECK(step(&s, left, true, has_back, 10, &out) == VR_INPUT_EVENT_NONE);
+        CHECK(step(&s, both, true, has_back, 10, &out) == VR_INPUT_EVENT_NONE);
+        CHECK(step(&s, none, true, has_back, 10, &out) == VR_INPUT_EVENT_NONE);
+        CHECK(step(&s, both, true, has_back, 10, &out) == VR_INPUT_EVENT_SCREENSHOT);
+    }
+
+    /* Not focused: nothing fires, and nothing carries over the focus loss. */
+    vr_input_map_init(&s);
+    CHECK(step(&s, both, false, true, 10, &out) == VR_INPUT_EVENT_NONE);
+    expect_only_button(&out, -1);
+
+    /* The Back+Start safety exit still quits, once, with both clicks held through it. */
+    vr_input_map_init(&s);
+    VrInputActions all = both;
+    all.menu = all.view = true;
+    int quits = 0, shots = 0;
+    for (int i = 0; i < 250; ++i) {
+        VrInputEvent ev = step(&s, all, true, true, 10, &out);
+        quits += ev == VR_INPUT_EVENT_QUIT;
+        shots += ev == VR_INPUT_EVENT_SCREENSHOT;
+    }
+    CHECK(quits == 1);
+    CHECK(shots <= 1);
+}
+
 int main(void)
 {
     test_rest();
@@ -922,6 +976,7 @@ int main(void)
     test_simple_profile();
     test_actions_set();
     test_pad_index_literals();
+    test_screenshot_combo();
 
     if (g_failures) {
         printf("%d check(s) FAILED\n", g_failures);

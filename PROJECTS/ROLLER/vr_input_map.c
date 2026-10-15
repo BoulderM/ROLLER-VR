@@ -222,8 +222,8 @@ static bool vr_squeeze(bool *down, float v)
 
 /* --- Per-frame step -------------------------------------------------------- */
 
-VrInputEvent vr_input_map_step(VrInputMapState *s, const VrInputActions *in, bool focused,
-                               bool has_back, uint32_t dt, VrPadState *out)
+static VrInputEvent vr_input_map_step_pad(VrInputMapState *s, const VrInputActions *in, bool focused,
+                                          bool has_back, uint32_t dt, VrPadState *out)
 {
     VrInputEvent ev = VR_INPUT_EVENT_NONE;
     vr_input_pad_rest(out);
@@ -313,5 +313,26 @@ VrInputEvent vr_input_map_step(VrInputMapState *s, const VrInputActions *in, boo
     out->buttons[VR_PAD_BUTTON_START] = vr_lone_button(start, &s->start_latched, &s->start_pending,
                                                        &s->start_forwarded, &s->start_held_ms,
                                                        &s->start_pulse_ms, dt);
+    return ev;
+}
+
+/* Both thumbstick clicks down fires VR_INPUT_EVENT_SCREENSHOT once, whichever came
+ * first. The clicks themselves still reach the pad (the game binds neither). It
+ * re-arms only when both are up, so a bouncing finger does not fire twice, and it
+ * never masks the Back+Start events. */
+VrInputEvent vr_input_map_step(VrInputMapState *s, const VrInputActions *in, bool focused,
+                               bool has_back, uint32_t dt, VrPadState *out)
+{
+    VrInputEvent ev = vr_input_map_step_pad(s, in, focused, has_back, dt, out);
+    if (!focused || !in)
+        return ev; /* the step above already cleared the state */
+
+    if (!in->left_stick_click && !in->right_stick_click) {
+        s->shot_disarmed = false;
+    } else if (in->left_stick_click && in->right_stick_click && !s->shot_disarmed) {
+        s->shot_disarmed = true;
+        if (ev == VR_INPUT_EVENT_NONE)
+            ev = VR_INPUT_EVENT_SCREENSHOT;
+    }
     return ev;
 }

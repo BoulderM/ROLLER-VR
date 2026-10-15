@@ -31,6 +31,7 @@ typedef struct {
     int press_count, bad_press_len; /* every press must last exactly 60 ms */
     int drive_frames, drive_bad;    /* steady drive frames, and those with wrong values */
     int stray_trigger;              /* right_trigger set outside the drive step */
+    int shot_frames, stray_shot;    /* both thumbstick clicks inside / outside the drive step's two windows */
     int stray_hold;                 /* view or menu set outside the exit steps */
     uint64_t hold_run_ms, hold_best_ms, hold_start_ms, hold_best_start_ms;
     uint64_t countdown_ms, drive_ms, release_ms, exit_ms;
@@ -135,6 +136,16 @@ static void run_sim(bool stuck_on_main, Trace *tr)
             if (in.right_trigger != 1.0f || fabsf(in.left_stick_x - want_x) > 1e-6f)
                 tr->drive_bad++;
         }
+        /* The screenshot gesture: both clicks for 300 ms at 3 s and again at 12 s into the drive. */
+        if (in.left_stick_click || in.right_stick_click) {
+            uint64_t rel = now - tr->drive_ms;
+            bool in_window = strcmp(cur, "drive") == 0
+                          && ((rel >= 3000 && rel < 3300) || (rel >= 12000 && rel < 12300));
+            if (in_window && in.left_stick_click && in.right_stick_click)
+                tr->shot_frames++;
+            else
+                tr->stray_shot++;
+        }
         /* The trigger may be held while in drive, and on the frame that leaves it. */
         if (in.right_trigger != 0.0f && strcmp(cur, "drive") != 0 && strcmp(prev, "drive") != 0)
             tr->stray_trigger++;
@@ -193,6 +204,8 @@ static void test_full_sequence(void)
     CHECK(tr.drive_frames == 1500);
     CHECK(tr.drive_bad == 0);
     CHECK(tr.stray_trigger == 0);
+    CHECK(tr.shot_frames == 60); /* two 300 ms presses at 10 ms frames */
+    CHECK(tr.stray_shot == 0);
     CHECK(tr.drive_ms - tr.countdown_ms == 12000);
     CHECK(tr.release_ms - tr.drive_ms == 15000);
     CHECK(tr.exit_ms - tr.release_ms == 1000);

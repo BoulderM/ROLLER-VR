@@ -4,6 +4,7 @@
 #include "vr_input_map.h"
 #include "vr_input_pad.h"
 #include "vr_log.h"
+#include "vr_runtime.h" /* vr_request_screenshot() */
 
 #include <SDL3/SDL.h>
 #include <string.h>
@@ -286,6 +287,10 @@ void vr_input_frame(bool session_focused)
                     has_back ? "Back+Start" : "Start", (unsigned)VR_SAFETY_HOLD_MS);
         quit_game = 1;   /* the same flags --vr-frames uses (vr_run_frame()) */
         racing = 0;
+    } else if (ev == VR_INPUT_EVENT_SCREENSHOT) {
+        vr_log_line("INFO", "VR input: screenshot gesture (both thumbstick clicks), frontend state %d",
+                    (int)eFrontendCurrentState);
+        vr_request_screenshot();
     } else if (ev == VR_INPUT_EVENT_RECENTER) {
         vr_log_line("INFO", "VR input: Back+Start tap: recenter requested (frontend state %d; "
                             "nothing to recenter until the menu quad exists)", (int)eFrontendCurrentState);

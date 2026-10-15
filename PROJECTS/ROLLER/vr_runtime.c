@@ -518,12 +518,80 @@ static bool vr_quad_texture_dump_png(SDL_GPUTexture *tex, Uint32 w, Uint32 h, co
     return ok;
 }
 
+/* --- Screenshot gesture (both thumbstick clicks; vr_input_map.c, vr_input.c) -------
+ * vr_request_screenshot() arms a request, and the next tick that renders consumes it:
+ * both eyes' resolved images (vr_present_stereo_frame()) plus, while racing, the HUD
+ * quad's texture (vr_hud_quad_frame()); or the menu quad's texture when a menu is up
+ * (vr_menu_quad_count_frame()). Files go into a "screenshots" folder next to the
+ * executable (the per-user app-data directory when that is not writable), named by
+ * local time. A request nothing rendered for within VR_SHOT_EXPIRY_TICKS ticks is
+ * dropped. Independent of the --vr-eye-dump-dir test hooks. */
+#define VR_SHOT_EXPIRY_TICKS 120
+static bool s_shot_requested;
+static int s_shot_ticks_left;
+static bool s_shot_active;       /* this tick's eyes (and HUD quad) are being saved */
+static char s_shot_prefix[400];  /* "<dir>/shot_<date>-<time>_<n>", no extension */
+static int s_shot_count;
+
+void vr_request_screenshot(void)
+{
+    s_shot_requested = true;
+    s_shot_ticks_left = VR_SHOT_EXPIRY_TICKS;
+}
+
+/* Fills s_shot_prefix; false (logged) when no screenshots folder can be created. */
+static bool vr_shot_begin(void)
+{
+    char dir[360];
+    bool ok = false;
+    const char *base = SDL_GetBasePath();
+    if (base) {
+        SDL_snprintf(dir, sizeof(dir), "%sscreenshots", base);
+        ok = SDL_CreateDirectory(dir); /* true when it already exists */
+    }
+    if (!ok) {
+        char *pref = SDL_GetPrefPath("ROLLER", "roller-vr");
+        if (pref) {
+            SDL_snprintf(dir, sizeof(dir), "%sscreenshots", pref);
+            SDL_free(pref);
+            ok = SDL_CreateDirectory(dir);
+        }
+    }
+    if (!ok) {
+        vr_log_line("WARN", "screenshot: no writable screenshots folder: %s", SDL_GetError());
+        return false;
+    }
+    SDL_Time now = 0;
+    SDL_DateTime dt;
+    SDL_zero(dt);
+    if (!SDL_GetCurrentTime(&now) || !SDL_TimeToDateTime(now, &dt, true))
+        SDL_zero(dt);
+    SDL_snprintf(s_shot_prefix, sizeof(s_shot_prefix), "%s/shot_%04d%02d%02d-%02d%02d%02d_%02d",
+                 dir, dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, ++s_shot_count);
+    return true;
+}
+
+static void vr_shot_save_quad(SDL_GPUTexture *tex, int w, int h, const char *what)
+{
+    char path[420];
+    SDL_snprintf(path, sizeof(path), "%s_%s.png", s_shot_prefix, what);
+    if (vr_quad_texture_dump_png(tex, (Uint32)w, (Uint32)h, path))
+        vr_log_line("INFO", "screenshot: saved %s (%dx%d)", path, w, h);
+    else
+        vr_log_line("WARN", "screenshot: could not save %s: %s", path, SDL_GetError());
+}
+
 /* Counts a submitted menu-quad frame. --vr-eye-dump-dir test hook: one PNG of
  * the quad's texture per menu-state entry, 45 frames in (so a fade-in has
  * settled), named after the state and its entry count. */
 static void vr_menu_quad_count_frame(int state)
 {
     static int s_dumps;
+    if (s_shot_requested && s_menu_quad_texture) {
+        s_shot_requested = false;
+        if (vr_shot_begin())
+            vr_shot_save_quad(s_menu_quad_texture, s_menu_quad_w, s_menu_quad_h, "menu");
+    }
     if (++s_menu_quad_state_frames != 45 || !g_szVREyeDumpDir[0])
         return;
     char dump_path[320];
@@ -1520,6 +1588,8 @@ static bool vr_hud_quad_frame(bool eyes_rendered, XrCompositionLayerQuad *out_la
             if (ok) {
                 s_hud_quad_total_frames++;
                 vr_hud_quad_maybe_dump(hud_tex, hud_w, hud_h);
+                if (s_shot_active)
+                    vr_shot_save_quad(hud_tex, hud_w, hud_h, "hud");
             }
         }
     }
@@ -1672,6 +1742,12 @@ bool vr_run_frame(void)
     XrCompositionLayerQuad hud_quad_layer;
     bool have_hud_quad = g_bVRMenuMode
         && vr_hud_quad_frame(s_frame_view_count_for_layer > 0, &hud_quad_layer);
+    s_shot_active = false;
+    if (s_shot_requested && --s_shot_ticks_left <= 0) {
+        s_shot_requested = false;
+        vr_log_line("INFO", "screenshot: request dropped, nothing was rendered to capture (frontend state %d)",
+                    (int)eFrontendCurrentState);
+    }
 
     XrCompositionLayerProjection projection_layer = {
         .type = XR_TYPE_COMPOSITION_LAYER_PROJECTION,
@@ -2101,6 +2177,22 @@ void vr_present_stereo_frame(uint8 *pMainScrPtr, unsigned int uiViewType, int iD
             XrSwapchainImageReleaseInfo release_info = { .type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
             xrReleaseSwapchainImage(s_swapchains[i], &release_info);
             return;
+        }
+
+        /* Screenshot gesture: this tick's request is taken by eye 0, so both eyes (and, in
+         * vr_hud_quad_frame(), the HUD) come from the same tick. Same safe point as the
+         * test hook below: after the fence wait, before the swapchain copy. */
+        if (i == 0 && s_shot_requested) {
+            s_shot_requested = false;
+            s_shot_active = vr_shot_begin();
+        }
+        if (s_shot_active) {
+            char shot_path[420];
+            SDL_snprintf(shot_path, sizeof(shot_path), "%s_eye%u.png", s_shot_prefix, (unsigned)i);
+            if (game_render_dump_vr_eye_png(g_pGameRenderer, resolved, eye_w, eye_h, shot_path))
+                vr_log_line("INFO", "screenshot: saved %s (%ux%u)", shot_path, (unsigned)eye_w, (unsigned)eye_h);
+            else
+                vr_log_line("WARN", "screenshot: could not save %s", shot_path);
         }
 
         /* --vr-eye-dump-dir test hook: in-process readback of this eye's
