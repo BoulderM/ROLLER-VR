@@ -6054,7 +6054,11 @@ void scene_render_gpu_quad_world_legacy(SceneRendererGPU *r,
         kind = SCENE_GPU_DRAW_TREE;
     else if (isSign)
 #if defined(ROLLER_VR_BUILD)
-        kind = (g_bSignsOnTop || vr_debug_cards_mode() == 2) ? SCENE_GPU_DRAW_SIGN : SCENE_GPU_DRAW_BUILDING;
+        /* SignsOnTop (a flat-view ROLLER.INI option) sends every sign-flagged card through the
+         * depth-copy sign pass, which keeps cards up to ~9 m behind a wall visible. In a headset
+         * that shows rows of reflectors and other cards through walls and ceilings, so VR always
+         * uses the depth-tested building path and ignores the option. */
+        kind = ((g_bSignsOnTop && !g_bVRMode) || vr_debug_cards_mode() == 2) ? SCENE_GPU_DRAW_SIGN : SCENE_GPU_DRAW_BUILDING;
 #else
         kind = g_bSignsOnTop ? SCENE_GPU_DRAW_SIGN : SCENE_GPU_DRAW_BUILDING;
 #endif
