@@ -1524,7 +1524,11 @@ static Uint32 view_configs_height(Uint32 i)
  * the headset to tune. Pose in VIEW space: metres, -Z ahead, +Y up. */
 #define VR_HUD_QUAD_DISTANCE_M        1.5f
 #define VR_HUD_QUAD_WIDTH_M           1.2f
-#define VR_HUD_QUAD_VERTICAL_OFFSET_M (-0.35f)
+#define VR_HUD_QUAD_VERTICAL_OFFSET_M (-0.15f)
+/* The pause menu (eFRONTEND_STATE_PAUSE_OVERLAY) goes through the same quad, drawn into the
+ * same 2D buffer; it is centred and a little larger so its text is easy to read. */
+#define VR_PAUSE_QUAD_VERTICAL_OFFSET_M 0.0f
+#define VR_PAUSE_QUAD_WIDTH_M         1.6f
 
 /* --vr-eye-dump-dir test hook: the HUD texture 45 submitted frames into the
  * session (countdown), then every 60 (through the scripted drive), at most 8. */
@@ -1544,14 +1548,16 @@ static void vr_hud_quad_maybe_dump(SDL_GPUTexture *tex, int w, int h)
 }
 
 /* Called once per OpenXR frame after main_loop_iteration(). Only while racing
- * (eFRONTEND_STATE_RACING) and only on a tick whose eyes rendered: on other
- * states scrbuf holds a menu picture, not a HUD, and on a tick with no eye
- * render the texture was not rebuilt. */
+ * (eFRONTEND_STATE_RACING) or paused (eFRONTEND_STATE_PAUSE_OVERLAY, where the
+ * pause menu is drawn into the same 2D buffer as the HUD), and only on a tick
+ * whose eyes rendered: on other states scrbuf holds a menu picture, not a HUD,
+ * and on a tick with no eye render the texture was not rebuilt. */
 static bool vr_hud_quad_frame(bool eyes_rendered, XrCompositionLayerQuad *out_layer)
 {
     bool ok = false;
     static int s_hud_failed_w, s_hud_failed_h; /* don't retry (and re-log) a size that already failed */
-    const bool racing_now = (int)eFrontendCurrentState == (int)eFRONTEND_STATE_RACING;
+    const bool paused_now = (int)eFrontendCurrentState == (int)eFRONTEND_STATE_PAUSE_OVERLAY;
+    const bool racing_now = (int)eFrontendCurrentState == (int)eFRONTEND_STATE_RACING || paused_now;
     if (racing_now && eyes_rendered) {
         int hud_w = 0, hud_h = 0;
         SDL_GPUTexture *hud_tex = game_render_vr_get_hud_overlay_texture(g_pGameRenderer, &hud_w, &hud_h);
@@ -1575,15 +1581,16 @@ static bool vr_hud_quad_frame(bool eyes_rendered, XrCompositionLayerQuad *out_la
          * swapchain) -- s_hud_quad.swapchain stays NULL in that case, so the
          * submit check below still correctly does nothing this frame. */
         if (hud_tex && s_hud_quad.swapchain) {
+            const float quad_width_m = paused_now ? VR_PAUSE_QUAD_WIDTH_M : VR_HUD_QUAD_WIDTH_M;
             const XrPosef hud_pose = {
                 .orientation = { 0.0f, 0.0f, 0.0f, 1.0f },
-                .position = { 0.0f, VR_HUD_QUAD_VERTICAL_OFFSET_M, -VR_HUD_QUAD_DISTANCE_M },
+                .position = { 0.0f, paused_now ? VR_PAUSE_QUAD_VERTICAL_OFFSET_M : VR_HUD_QUAD_VERTICAL_OFFSET_M,
+                              -VR_HUD_QUAD_DISTANCE_M },
             };
             /* Source alpha: palette index 0 is transparent (indexed_to_rgba()). */
             ok = vr_quad_submit(&s_hud_quad, hud_tex, (uint32_t)hud_w, (uint32_t)hud_h,
                                 s_view_space, hud_pose,
-                                (XrExtent2Df){ VR_HUD_QUAD_WIDTH_M,
-                                               VR_HUD_QUAD_WIDTH_M * (float)hud_h / (float)hud_w },
+                                (XrExtent2Df){ quad_width_m, quad_width_m * (float)hud_h / (float)hud_w },
                                 true, out_layer);
             if (ok) {
                 s_hud_quad_total_frames++;

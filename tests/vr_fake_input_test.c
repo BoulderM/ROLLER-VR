@@ -31,7 +31,8 @@ typedef struct {
     int press_count, bad_press_len; /* every press must last exactly 60 ms */
     int drive_frames, drive_bad;    /* steady drive frames, and those with wrong values */
     int stray_trigger;              /* right_trigger set outside the drive step */
-    int shot_frames, stray_shot;    /* both thumbstick clicks inside / outside the drive step's two windows */
+    int shot_frames, stray_shot;    /* both thumbstick clicks inside / outside the drive step's three windows */
+    int pause_frames;               /* Start alone, inside the drive step's two pause/resume taps */
     int stray_hold;                 /* view or menu set outside the exit steps */
     uint64_t hold_run_ms, hold_best_ms, hold_start_ms, hold_best_start_ms;
     uint64_t countdown_ms, drive_ms, release_ms, exit_ms;
@@ -136,11 +137,12 @@ static void run_sim(bool stuck_on_main, Trace *tr)
             if (in.right_trigger != 1.0f || fabsf(in.left_stick_x - want_x) > 1e-6f)
                 tr->drive_bad++;
         }
-        /* The screenshot gesture: both clicks for 300 ms at 3 s and again at 12 s into the drive. */
+        /* The screenshot gesture: both clicks for 300 ms at 3 s, 7.5 s (while paused) and 12 s into the drive. */
         if (in.left_stick_click || in.right_stick_click) {
             uint64_t rel = now - tr->drive_ms;
             bool in_window = strcmp(cur, "drive") == 0
-                          && ((rel >= 3000 && rel < 3300) || (rel >= 12000 && rel < 12300));
+                          && ((rel >= 3000 && rel < 3300) || (rel >= 7500 && rel < 7800)
+                              || (rel >= 12000 && rel < 12300));
             if (in_window && in.left_stick_click && in.right_stick_click)
                 tr->shot_frames++;
             else
@@ -149,7 +151,13 @@ static void run_sim(bool stuck_on_main, Trace *tr)
         /* The trigger may be held while in drive, and on the frame that leaves it. */
         if (in.right_trigger != 0.0f && strcmp(cur, "drive") != 0 && strcmp(prev, "drive") != 0)
             tr->stray_trigger++;
-        if ((in.view || in.menu) && !is_exit_step(cur))
+        /* Start alone, 60 ms at 6 s (pause) and 9 s (resume) into the drive. */
+        bool pause_tap = strcmp(cur, "drive") == 0 && in.menu && !in.view
+                      && ((now - tr->drive_ms >= 6000 && now - tr->drive_ms < 6060)
+                          || (now - tr->drive_ms >= 9000 && now - tr->drive_ms < 9060));
+        if (pause_tap)
+            tr->pause_frames++;
+        else if ((in.view || in.menu) && !is_exit_step(cur))
             tr->stray_hold++;
 
         if (in.view && in.menu) {
@@ -204,7 +212,8 @@ static void test_full_sequence(void)
     CHECK(tr.drive_frames == 1500);
     CHECK(tr.drive_bad == 0);
     CHECK(tr.stray_trigger == 0);
-    CHECK(tr.shot_frames == 60); /* two 300 ms presses at 10 ms frames */
+    CHECK(tr.shot_frames == 90); /* three 300 ms presses at 10 ms frames */
+    CHECK(tr.pause_frames == 12); /* two 60 ms Start taps */
     CHECK(tr.stray_shot == 0);
     CHECK(tr.drive_ms - tr.countdown_ms == 12000);
     CHECK(tr.release_ms - tr.drive_ms == 15000);
