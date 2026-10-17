@@ -27,6 +27,55 @@ latest native version from the
 wherever you want. On initial launch, select a CD image (CUE/BIN or ISO) to
 extract the assets. Press the \` key to access additional settings.
 
+## VR (OpenXR) mode
+
+This fork adds a cockpit VR mode built on OpenXR. Both eyes are rendered with
+the real head pose, the menus and the HUD float in front of you as quad layers,
+and the controllers drive the car. It was developed and played on a Windows 11
+PC with SteamVR and a Steam Frame (Frame controllers); the same code runs
+against Monado on Linux, which is how it is tested without a headset. Bindings
+for Touch and simple controllers are included but have not been tried on real
+hardware. A plain `zig build` still produces the normal flat game.
+
+Like the flat game it needs game data from your own copy of Whiplash/Fatal
+Racing; nothing from the game is included. Put the contents of the disc's
+`FATDATA` folder in a folder called `fatdata`, then start the VR build with the
+folder that contains it:
+
+```
+roller-vr --vr --whiplash-root <folder containing fatdata>
+```
+
+A log is written to `roller-vr.log` next to the executable. Prebuilt Windows
+binaries (no game data) are on the
+[releases](https://github.com/BoulderM/ROLLER-vr/releases) page.
+
+Build it with Zig 0.15.2:
+
+- Linux: `zig build -Dvr -Doptimize=ReleaseSafe`. Needs the OpenXR loader and
+  Vulkan development packages (`libopenxr-dev`, `libvulkan-dev`).
+- Windows, cross-built from Linux: set `OPENXR_SDK_PATH` to an extracted
+  OpenXR-SDK release (`include/` and `lib/openxr_loader.lib`) and `VULKAN_SDK`
+  to a Vulkan SDK (`Include/`, `Lib/vulkan-1.lib`), then
+  `zig build -Dvr -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe`. Ship
+  `openxr_loader.dll` next to the executable. Always pass `-Doptimize`: the
+  default Debug build is far too slow for VR.
+
+The VR build uses a patched SDL
+([BoulderM/SDL](https://github.com/BoulderM/SDL), branch `vr-gpu-properties`)
+that exposes SDL_GPU's Vulkan device so OpenXR can bind to it. It is fetched
+automatically, and only for `-Dvr`.
+
+Controls with the Frame controllers: the left stick steers, the right trigger
+accelerates (hold it fully; the engine needs about a second after GO), the left
+trigger brakes, and the shoulder buttons or grips shift (the gearbox is
+automatic otherwise). Menu (Start) pauses and opens the pause menu, D-pad and A
+navigate menus, holding View and Menu for two seconds quits from anywhere, and
+clicking both thumbsticks saves the two eye images to a `screenshots` folder.
+The retail `FATAL.INI` has sound effects and music switched off; they can be
+switched on in the pause menu's SOUND item. The VR build ignores the flat game's
+`SignsOnTop` option, which draws sign cards through walls.
+
 ## About
 
 Debug symbol dump generated with wdump, part of:
