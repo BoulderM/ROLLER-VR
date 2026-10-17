@@ -5735,6 +5735,28 @@ static void vrq_record(const SceneRendererGPU *r, const SceneRenderVertex v[4], 
     }
 }
 
+#if defined(ROLLER_VR_BUILD)
+/* ROLLER_VR_DEBUG_CARDS=tree|sign (diagnosis only): 1 = send every sign-flagged card through the tree
+ * pipeline (LESS_OR_EQUAL, no depth write), 2 = through the sign pipelines, 0 = normal (building). */
+static int vr_debug_cards_mode(void) {
+    static int s_mode = -1;
+    if (s_mode < 0) {
+        const char *env = SDL_getenv("ROLLER_VR_DEBUG_CARDS");
+        s_mode = (env && !SDL_strcmp(env, "tree")) ? 1 : (env && !SDL_strcmp(env, "sign")) ? 2 : 0;
+    }
+    return s_mode;
+}
+#endif
+
+#if defined(ROLLER_VR_BUILD)
+/* Draw commands queued per SceneGPUDrawKind since the last take (diagnosis log only). */
+static int s_vrKindCount[11];
+void scene_render_gpu_vr_kind_counts_take(int out[11]) {
+    memcpy(out, s_vrKindCount, sizeof(s_vrKindCount));
+    memset(s_vrKindCount, 0, sizeof(s_vrKindCount));
+}
+#endif
+
 void scene_render_gpu_vr_quad_diag_take(SceneRenderGpuVrQuadDiag *out) {
     if (out) *out = s_vrqAcc;
     memset(&s_vrqAcc, 0, sizeof(s_vrqAcc));
@@ -6010,11 +6032,32 @@ void scene_render_gpu_quad_world_legacy(SceneRendererGPU *r,
     bool isTree = (surfaceFlags & SURFACE_FLAG_GPU_IS_TREE) != 0
               && (options.subdivideType == SCENE_RENDER_SUBDIVIDE_TYPE_BUILDING
                   || options.subdivideType == SCENE_RENDER_SUBDIVIDE_TYPE_SIGN);
+#if defined(ROLLER_VR_BUILD)
+    /* ROLLER_VR_DEBUG_TINT=1 (diagnosis only): paint tree cards red and every other real-sign quad
+     * (adverts, signs, balloon/tree plans flagged GPU_IS_SIGN) green, to see which draw path the
+     * through-the-walls cards take. */
+    {
+        static int s_dbgTint = -1;
+        if (s_dbgTint < 0) {
+            const char *env = SDL_getenv("ROLLER_VR_DEBUG_TINT");
+            s_dbgTint = (env && env[0] == '1') ? 1 : 0;
+        }
+        if (s_dbgTint && (isTree || isSign)) {
+            SDL_GPUTexture *dbgTex = get_flat_color_texture(r, isTree ? 231 : 255);
+            if (dbgTex) gpuTex = dbgTex;
+        }
+    }
+    if (vr_debug_cards_mode() == 1 && isSign && !isTree) isTree = true;
+#endif
     SceneGPUDrawKind kind;
     if (isTree)
         kind = SCENE_GPU_DRAW_TREE;
     else if (isSign)
+#if defined(ROLLER_VR_BUILD)
+        kind = (g_bSignsOnTop || vr_debug_cards_mode() == 2) ? SCENE_GPU_DRAW_SIGN : SCENE_GPU_DRAW_BUILDING;
+#else
         kind = g_bSignsOnTop ? SCENE_GPU_DRAW_SIGN : SCENE_GPU_DRAW_BUILDING;
+#endif
     else if (isBackTexSign)
         kind = SCENE_GPU_DRAW_SIGN_BK;
     else if (gpuTex == r->shadowTex)
@@ -6036,6 +6079,9 @@ void scene_render_gpu_quad_world_legacy(SceneRendererGPU *r,
     else
         kind = SCENE_GPU_DRAW_OPAQUE;
 
+#if defined(ROLLER_VR_BUILD)
+    if ((int)kind >= 0 && (int)kind < 11) s_vrKindCount[(int)kind]++;
+#endif
     float cu[4], cv[4];
     if (isTrackDarken && r->emulateSoftwareTrackDarkenBorder) {
         cu[0] = 0.0f; cv[0] = 0.0f;

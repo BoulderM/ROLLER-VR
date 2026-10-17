@@ -88,6 +88,9 @@ typedef struct SceneRenderGpuVrQuadDiag {
 } SceneRenderGpuVrQuadDiag;
 void scene_render_gpu_vr_quad_diag_enable(bool on);
 void scene_render_gpu_vr_quad_diag_take(SceneRenderGpuVrQuadDiag *out);
+/* Draw commands queued per draw kind (opaque, blend, building, bf-building, sign, sign-bk, tree, wall,
+ * bf-wall, shadow, track-darken) since the last call; resets the counters. VR diagnosis log only. */
+void scene_render_gpu_vr_kind_counts_take(int out[11]);
 
 /* Clears whatever override scene_render_gpu_set_vr_eye_mvp() last set, so
  * scene_render_gpu_build_vp() goes back to its normal camera-derived

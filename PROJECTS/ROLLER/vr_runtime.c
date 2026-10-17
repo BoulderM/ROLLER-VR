@@ -1798,7 +1798,14 @@ bool vr_run_frame(void)
             s_vr_empty_run_ticks = 0;
         }
         s_vr_frames_presented++;
+        int kind_counts[11];
+        scene_render_gpu_vr_kind_counts_take(kind_counts); /* every frame, so a log line holds one frame's counts */
         if (s_vr_frames_presented == 1 || s_vr_frames_presented % 60 == 0) {
+            vr_log_line("INFO", "draw kinds frame %d (both eyes): opaque=%d blend=%d building=%d bfBuilding=%d sign=%d signBk=%d "
+                                "tree=%d wall=%d bfWall=%d shadow=%d trackDarken=%d signsOnTop=%d",
+                        s_vr_frames_presented, kind_counts[0], kind_counts[1], kind_counts[2], kind_counts[3], kind_counts[4],
+                        kind_counts[5], kind_counts[6], kind_counts[7], kind_counts[8], kind_counts[9], kind_counts[10],
+                        (int)g_bSignsOnTop);
             /* Draw counts are the last eye's queued/merged totals for this
              * tick (scene_render_gpu's repack leaves them valid until the next
              * begin_frame). cpuMs covers the game tick and both eyes' CPU work,
