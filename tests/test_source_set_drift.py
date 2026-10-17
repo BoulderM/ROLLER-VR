@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import sys
 import unittest
 
@@ -50,7 +51,11 @@ class SourceSetDriftTests(unittest.TestCase):
     def test_every_game_module_source_block_is_parsed(self) -> None:
         calls = drift.parse_zig_source_calls(self.build_zig)
 
-        self.assertEqual(len(calls), self.build_zig.count("exe_mod.addCSourceFiles"))
+        # \b: vr_exe_mod.addCSourceFiles (the VR executable) is outside the game contract.
+        self.assertEqual(
+            len(calls),
+            len(re.findall(r"\bexe_mod\.addCSourceFiles", self.build_zig)),
+        )
         self.assertTrue(
             any(
                 call.platforms == frozenset(("windows",))
@@ -66,13 +71,46 @@ class SourceSetDriftTests(unittest.TestCase):
             )
         )
 
-    def test_source_added_only_to_zig_is_rejected(self) -> None:
-        build_zig = self.build_zig.replace(
-            '            "PROJECTS/ROLLER/3d.c",\n',
-            '            "PROJECTS/ROLLER/3d.c",\n'
-            '            "PROJECTS/ROLLER/debug_overlay_stub.c",\n',
-            1,
+    def test_named_const_source_list_is_resolved(self) -> None:
+        build_zig = (
+            "const shared_sources: []const []const u8 = &.{\n"
+            '    "PROJECTS/ROLLER/a.c",\n'
+            '    "PROJECTS/ROLLER/b.c", // trailing comment\n'
+            "};\n"
+            "pub fn build() void {\n"
+            "    exe_mod.addCSourceFiles(.{\n"
+            "        .flags = c_flags,\n"
+            "        .files = shared_sources,\n"
+            "    });\n"
+            "}\n"
         )
+
+        calls = drift.parse_zig_source_calls(build_zig)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            calls[0].sources, ("PROJECTS/ROLLER/a.c", "PROJECTS/ROLLER/b.c")
+        )
+
+    def test_files_expression_must_be_inline_or_a_const_list_in_build_zig(self) -> None:
+        build_zig = (
+            "pub fn build() void {\n"
+            "    exe_mod.addCSourceFiles(.{ .flags = c_flags, .files = from_elsewhere });\n"
+            "}\n"
+        )
+
+        with self.assertRaisesRegex(drift.SourceSetError, "const list"):
+            drift.parse_zig_source_calls(build_zig)
+
+    def test_source_added_only_to_zig_is_rejected(self) -> None:
+        build_zig, replaced = re.subn(
+            r'^( *)"PROJECTS/ROLLER/3d\.c",\n',
+            r'\g<0>\1"PROJECTS/ROLLER/debug_overlay_stub.c",\n',
+            self.build_zig,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        self.assertEqual(replaced, 1)
 
         with self.assertRaisesRegex(drift.SourceSetError, "missing from CMake"):
             self.validate(build_zig=build_zig)

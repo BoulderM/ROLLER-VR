@@ -217,6 +217,32 @@ def _normalize_source(root: str, source: str, context: str) -> str:
     return normalized.removeprefix("./")
 
 
+def _named_source_list(
+    build_zig: str, masked: str, call_masked: str, context: str
+) -> str:
+    """Return the literal list text behind `.files = NAME`, where NAME is a
+    `const NAME: []const []const u8 = &.{...};` defined in build.zig (the VR
+    executable shares the game's source lists, so they are named constants)."""
+    name_match = re.search(r"\.files\s*=\s*([A-Za-z_]\w*)\s*(?:,|\}|$)", call_masked)
+    error = (
+        f"{context}: .files must be an inline .{{...}} list or a const list "
+        "defined in build.zig"
+    )
+    if name_match is None:
+        raise SourceSetError(error)
+    definition = re.compile(
+        r"\bconst\s+"
+        + re.escape(name_match.group(1))
+        + r"\s*:\s*\[\s*\]\s*const\s*\[\s*\]\s*const\s+u8\s*=\s*&\s*\.\s*\{"
+    )
+    found = list(definition.finditer(masked))
+    if len(found) != 1:
+        raise SourceSetError(error)
+    list_open = masked.find("{", found[0].start(), found[0].end())
+    list_close = _find_matching(masked, list_open, "{", "}")
+    return build_zig[list_open + 1 : list_close]
+
+
 def parse_zig_source_calls(build_zig: str) -> list[SourceCall]:
     masked = _mask_literals_and_comments(build_zig)
     branch_ranges = _boolean_branch_ranges(masked) + _os_switch_arm_ranges(masked)
@@ -239,11 +265,12 @@ def parse_zig_source_calls(build_zig: str) -> list[SourceCall]:
             raise SourceSetError(f"{context}: .root must be a literal b.path(...)")
         root = root_match.group(1) if root_match else "."
         files_match = re.search(r"\.files\s*=\s*&\s*\.\s*\{", call_masked)
-        if files_match is None:
-            raise SourceSetError(f"{context}: .files must be an inline .{{...}} list")
-        files_open = call_masked.find("{", files_match.start(), files_match.end())
-        files_close = _find_matching(call_masked, files_open, "{", "}")
-        files_text = call_text[files_open + 1 : files_close]
+        if files_match is not None:
+            files_open = call_masked.find("{", files_match.start(), files_match.end())
+            files_close = _find_matching(call_masked, files_open, "{", "}")
+            files_text = call_text[files_open + 1 : files_close]
+        else:
+            files_text = _named_source_list(build_zig, masked, call_masked, context)
         remaining_files_expression = _mask_literals_and_comments(files_text)
         if remaining_files_expression.strip(" \t\r\n,"):
             raise SourceSetError(
