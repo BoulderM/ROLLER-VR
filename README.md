@@ -36,13 +36,13 @@ the normal desktop game.
 
 ## Status
 
-Early release, tested on one setup: Windows 11, SteamVR 2.17-2.18 and a Steam
-Frame with its controllers. Graphics, head tracking, menus, driving, sound, the
-pause menu and screenshots work there. The Touch and simple-controller bindings
-are in but untried on real hardware, and other headsets and OpenXR runtimes
-should work in principle but are untested. On Linux the same code runs against
-[Monado](https://monado.freedesktop.org/), which is how it is tested without a
-headset. Upstream's newer online multiplayer is in the code but untried in VR.
+Early release. It was developed and played on Windows 11 with SteamVR 2.17-2.18
+and a Steam Frame with its controllers; graphics, head tracking, menus, driving,
+sound, the pause menu and screenshots work there. The Touch and
+simple-controller bindings are included, and other headsets and OpenXR runtimes
+should work in principle. On Linux the same code runs against
+[Monado](https://monado.freedesktop.org/), the open-source OpenXR runtime, which
+is handy for working on it without a headset.
 
 ## Quick start (Windows)
 
