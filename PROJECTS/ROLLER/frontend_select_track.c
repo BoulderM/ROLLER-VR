@@ -18,6 +18,10 @@
 #include "rollercomms.h"
 #include "menu_render.h"
 #include "snapshot.h"
+#include "net_types.h"
+#if !defined(IS_WASM) && !defined(ROLLER_EDITOR_CORE)
+#include "net_frontend_lobby.h"
+#endif
 #include <ctype.h>
 #include <fcntl.h>
 #include <string.h>
@@ -400,6 +404,8 @@ void snapshot_render_menu_select_track(void)
 
 static void frontend_track_select_begin_broadcast_wait(int iBroadcastMode)
 {
+  if (net_mode == NET_MODE_MODERN)
+    return;
   network_broadcast_wait_start(iBroadcastMode, 1);
 }
 
@@ -407,6 +413,8 @@ static void frontend_track_select_begin_broadcast_wait(int iBroadcastMode)
 
 static int frontend_track_select_update_broadcast_wait(void)
 {
+  if (net_mode == NET_MODE_MODERN)
+    return 0;
   if (!network_broadcast_wait_active())
     return 0;
 
@@ -981,6 +989,10 @@ void frontend_track_select_update(void)
 
 void frontend_track_select_exit(void)
 {
+#if !defined(IS_WASM) && !defined(ROLLER_EDITOR_CORE)
+  if (net_mode == NET_MODE_MODERN)
+    NetFrontendLobbyUpdateConfig();
+#endif
   iFrontendTrackExitFading = 0;
   if (!SnapshotShouldStop())
     frontend_track_select_black_palette();

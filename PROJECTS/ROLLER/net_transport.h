@@ -1,0 +1,98 @@
+#ifndef ROLLER_NET_TRANSPORT_H
+#define ROLLER_NET_TRANSPORT_H
+#include "net_protocol.h"
+
+enum {
+  NET_ADDR_IPV4 = 4,
+  NET_ADDR_IPV6 = 6,
+  NET_ADDRESS_STRING_CAPACITY = 80,
+  NET_SIM_MAX_ENDPOINTS = 8
+};
+
+typedef struct {
+  uint8 abAddress[16];
+  uint16 unPort;
+  uint8 byFamily;
+  uint8 byReserved;
+  uint32 uiScopeId;
+} tNetAddr;
+typedef tNetAddr tNetAddress;
+
+/* Pure address classification, also usable by the socket-free discovery core. */
+static inline int NetAddressIsLoopback(const tNetAddress *pAddress)
+{
+  int iByte;
+  if (!pAddress)
+    return 0;
+  if (pAddress->byFamily == NET_ADDR_IPV4)
+    return pAddress->abAddress[0] == 127;
+  if (pAddress->byFamily != NET_ADDR_IPV6)
+    return 0;
+  for (iByte = 0; iByte < 10; ++iByte)
+    if (pAddress->abAddress[iByte])
+      return 0;
+  /* Include IPv4-mapped loopback addresses supplied on the wire. */
+  if (pAddress->abAddress[10] == 255 && pAddress->abAddress[11] == 255)
+    return pAddress->abAddress[12] == 127;
+  for (iByte = 10; iByte < 15; ++iByte)
+    if (pAddress->abAddress[iByte])
+      return 0;
+  return pAddress->abAddress[15] == 1;
+}
+
+typedef struct {
+  void *pContext;
+  int (*pSend)(void *pContext, const tNetAddress *pTo, const void *pData, int iLength);
+  int (*pReceive)(void *pContext, tNetAddress *pFrom, void *pData, int iCapacity);
+  uint64 (*pNowMs)(void *pContext);
+} tNetTransport;
+
+typedef uint64 (*tNetClockFn)(void *pContext);
+typedef struct tNetTransportUdp tNetTransportUdp;
+
+/* Numeric forms are a.b.c.d[:port] and [ipv6%scope][:port].  An omitted
+   port uses unDefaultPort.  IPv6 without a port may omit the brackets. */
+int NetAddressParse(tNetAddress *pAddress, const char *szText, uint16 unDefaultPort);
+/* User-entered hostname[:port], numeric address, or udp://host[:port].
+   Validation does no DNS; resolution may block and belongs outside a tick. */
+int NetAddressEndpointValid(const char *szText, uint16 unDefaultPort);
+int NetAddressResolve(tNetAddress *pAddress, const char *szText, uint16 unDefaultPort);
+int NetAddressFormat(const tNetAddress *pAddress, char *szText, int iCapacity);
+int NetAddressEqual(const tNetAddress *pA, const tNetAddress *pB);
+
+/* Returns unique non-loopback addresses on active interfaces, or -1 on error.
+   Zero is valid when no usable network interface is available. */
+int NetAddressEnumerateLocal(tNetAddress *pAddresses, int iCapacity, uint16 unPort);
+
+/* A single non-blocking IPv6 socket with IPv4-mapped addressing.  unPort == 0
+   asks the OS for an ephemeral port. */
+tNetTransportUdp *NetTransportUdpCreate(uint16 unPort);
+void NetTransportUdpDestroy(tNetTransportUdp *pUdp);
+tNetTransport NetTransportUdpEndpoint(tNetTransportUdp *pUdp);
+uint16 NetTransportUdpPort(const tNetTransportUdp *pUdp);
+
+/* Passing NULL restores the platform monotonic clock. */
+void NetTransportUdpSetClock(tNetTransportUdp *pUdp, tNetClockFn pClock,
+                             void *pClockContext);
+
+/* Platform cryptographic random source.  The context argument is ignored so
+   this function can be passed directly to the session random callback. */
+int NetPlatformRandomBytes(void *pContext, void *pData, int iLength);
+
+typedef struct {
+  uint32 uiLatencyMs, uiJitterMs;
+  uint16 unLossPermille, unDuplicatePermille, unReorderPermille;
+} tNetSimLink;
+typedef struct tNetTransportSim tNetTransportSim;
+
+/* Channel tests only: deterministic addressed endpoints with independent
+   outgoing link settings. */
+tNetTransportSim *NetTransportSimCreate(uint32 uiSeed);
+void NetTransportSimDestroy(tNetTransportSim *pSim);
+tNetTransport NetTransportSimEndpoint(tNetTransportSim *pSim, int iEndpoint);
+int NetTransportSimSetLink(tNetTransportSim *pSim, int iSender, const tNetSimLink *pLink);
+int NetTransportSimSetEndpointAddress(tNetTransportSim *pSim, int iEndpoint,
+                                      const tNetAddress *pAddress);
+int NetTransportSimAdvance(tNetTransportSim *pSim, uint64 ullNowMs);
+
+#endif

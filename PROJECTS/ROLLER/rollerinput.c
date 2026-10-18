@@ -1,4 +1,7 @@
 #include "rollerinput.h"
+#if !defined(IS_WASM) && !defined(ROLLER_EDITOR_CORE)
+#include "net_frontend_lobby.h"
+#endif
 #include "3d.h"
 #include "phone_ui.h"
 #if defined(IS_ANDROID) || defined(IS_WASM)
@@ -1485,6 +1488,16 @@ void InputHandleEvent(const SDL_Event *pEvent)
       pEvent->type == SDL_EVENT_GAMEPAD_REMOVED) {
     InputRequestDeviceRefresh();
   }
+}
+
+//-------------------------------------------------------------------------------------------------
+
+void InputHandleAppResume(void)
+{
+#if defined(IS_ANDROID) || defined(IS_WASM)
+  if (ROLLERPhoneUIActive())
+    InputPhoneShutdown();
+#endif
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -3819,6 +3832,19 @@ int InputLoadConfig(void)
     szText = InputTrim(szText);
     szValue = InputTrim(szEquals + 1);
 
+#if !defined(IS_WASM) && !defined(ROLLER_EDITOR_CORE)
+    if (InputStringEqualsNoCase(szText, "ServerType")) {
+      if (InputStringEqualsNoCase(szValue, "Public"))
+        NetFrontendSetServerType(NET_SERVER_PUBLIC);
+      else if (InputStringEqualsNoCase(szValue, "LAN"))
+        NetFrontendSetServerType(NET_SERVER_LAN);
+      continue;
+    }
+    if (InputStringEqualsNoCase(szText, "RendezvousServer")) {
+      NetFrontendLoadRendezvous(szValue);
+      continue;
+    }
+#endif
     if (InputStringEqualsNoCase(szText, "SelectedTrackType")) {
       InputCopyString(szCommunityTrackType, sizeof(szCommunityTrackType),
                       szValue);
@@ -3908,6 +3934,11 @@ void InputSaveConfig(void)
   fprintf(fp, "MusicSource=%s\n", MusicCD ? "CD" : MusicOPL ? "MIDI_OPL" : MusicOS ? "MIDI_OS" : "MIDI");
   fprintf(fp, "InfiniteDrawDistance=%.2f\n", g_fDrawDistanceFraction);
   fprintf(fp, "NoCollisionLimit=%d\n", g_bNoCollisionLimit ? 1 : 0);
+#if !defined(IS_WASM) && !defined(ROLLER_EDITOR_CORE)
+  fprintf(fp, "ServerType=%s\n",
+          NetFrontendServerType() == NET_SERVER_LAN ? "LAN" : "Public");
+  fprintf(fp, "RendezvousServer=%s\n", NetFrontendRendezvous());
+#endif
   fprintf(fp, "AirborneCollisions=%d\n", g_bAirborneCollisions ? 1 : 0);
   fprintf(fp, "AIAutomaticGears=%d\n", g_bAINoCheatStart ? 1 : 0);
   fprintf(fp, "FixCarMenuBug=%d\n", g_bFixCarMenuBug ? 1 : 0);

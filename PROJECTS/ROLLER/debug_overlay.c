@@ -1,4 +1,9 @@
 #include "debug_overlay.h"
+#include "net_types.h"
+#if !defined(IS_WASM) && !defined(ROLLER_EDITOR_CORE)
+#include "net_frontend_lobby.h"
+#include "net_rendezvous.h"
+#endif
 #include "types.h"
 #if defined(IS_WASM)
 #include "nuklear_sdl_renderer.h"
@@ -938,6 +943,62 @@ static void DrawDebugPanel(DebugOverlay *pOverlay) {
   if (nk_begin(pCtx, "General",
                nk_rect(PANEL_MARGIN, PANEL_Y, iGeneralW, PANEL_H),
                NK_WINDOW_BORDER | NK_WINDOW_TITLE)) {
+    static int iNetworkPage;
+    nk_layout_row_dynamic(pCtx, DEBUG_ROW_H, 1);
+    nk_checkbox_label(pCtx, "Network statistics", &iNetworkPage);
+    if (iNetworkPage) {
+      char szStat[160];
+#define NET_STAT(...) do { snprintf(szStat, sizeof(szStat), __VA_ARGS__); nk_label(pCtx, szStat, NK_TEXT_LEFT); } while (0)
+      NET_STAT("RTT %.1f ms  jitter %.1f ms  loss %d%%", g_netStats.fRttMs, g_netStats.fJitterMs, g_netStats.iLossPercent);
+      NET_STAT("Snapshot %d ms old%s", g_netStats.iSnapshotAgeMs, g_netStats.iStalled ? " (stalled)" : "");
+      NET_STAT("Corrections %d  magnitude %.3f", g_netStats.iCorrectionCount, g_netStats.fCorrectionMagnitude);
+      NET_STAT("Deferred %d  ramp corrections %d", g_netStats.iDeferredCorrections, g_netStats.iRampCorrections);
+      NET_STAT("Replay depth %d  total ticks %d", g_netStats.iReplayDepth, g_netStats.iReplayTicksTotal);
+      NET_STAT("Replay cost %.3f ms  worst %.3f ms", g_netStats.fReplayMsTotal, g_netStats.fReplayMsWorst);
+      NET_STAT("Prediction %s  transitions %d", g_netStats.iPredictionMode == NET_PREDICT_DELAYED ? "delayed" : "full", g_netStats.iPredictionTransitions);
+      NET_STAT("Time delayed %.1f s", g_netStats.uiTimeDegradedMs / 1000.0);
+      NET_STAT("In %d B/s  out %d B/s", g_netStats.iBytesInPerSec, g_netStats.iBytesOutPerSec);
+#undef NET_STAT
+    } else {
+#if !defined(IS_WASM) && !defined(ROLLER_EDITOR_CORE)
+    {
+      static const char *apszServerTypes[] = { "Public", "LAN" };
+      int iServerType = (int)NetFrontendServerType();
+      nk_layout_row_dynamic(pCtx, DEBUG_ROW_H, 2);
+      nk_label(pCtx, "Server type", NK_TEXT_LEFT);
+      int iNewServerType = nk_combo(pCtx, apszServerTypes, NK_LEN(apszServerTypes),
+          iServerType, COMBO_ITEM_H, nk_vec2(COMBO_W, 9999));
+      if (iNewServerType != iServerType &&
+          NetFrontendSetServerType((eNetServerType)iNewServerType))
+        InputSaveConfig();
+    }
+    {
+      static char szRendezvous[320];
+      static int iLength, iInvalid;
+      static nk_flags uiLastEdit;
+      if (!(uiLastEdit & NK_EDIT_ACTIVE)) {
+        snprintf(szRendezvous, sizeof(szRendezvous), "%s", NetFrontendRendezvous());
+        iLength = (int)strlen(szRendezvous);
+      }
+      nk_layout_row_dynamic(pCtx, DEBUG_ROW_H, 1);
+      nk_label(pCtx, "Rendezvous server", NK_TEXT_LEFT);
+      uiLastEdit = nk_edit_string(pCtx,
+          NK_EDIT_FIELD | NK_EDIT_SIG_ENTER | NK_EDIT_AUTO_SELECT,
+          szRendezvous, &iLength, sizeof(szRendezvous) - 1, nk_filter_ascii);
+      if (uiLastEdit & (NK_EDIT_DEACTIVATED | NK_EDIT_COMMITED)) {
+        szRendezvous[iLength] = 0;
+        iInvalid = !NetFrontendSetRendezvous(szRendezvous, NET_RVZ_DEFAULT_PORT);
+        if (!iInvalid)
+          InputSaveConfig();
+      }
+      if (iInvalid)
+        nk_label(pCtx, "Enter a hostname or IP, optionally :port", NK_TEXT_LEFT);
+      else if (NetFrontendIsOpen())
+        nk_label(pCtx, "Changes apply when you next host or browse", NK_TEXT_LEFT);
+      else if (NetFrontendServerType() == NET_SERVER_LAN)
+        nk_label(pCtx, "LAN bypasses the rendezvous server", NK_TEXT_LEFT);
+    }
+#endif
 #if defined(IS_WASM)
     static const char *apszMusic[] = { "MIDI (OPL3)", "CD" };
     int iMusicSel = (MusicCD != 0) ? 1 : 0;
@@ -1082,6 +1143,7 @@ static void DrawDebugPanel(DebugOverlay *pOverlay) {
       }
     }
 #endif
+    }
   }
   nk_end(pCtx);
 

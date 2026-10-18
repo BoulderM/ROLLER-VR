@@ -22,6 +22,10 @@
 #include "rollercd.h"
 #include "view.h"
 #include "platform_log.h"
+#include "net_channel.h"
+#if !defined(IS_WASM) && !defined(ROLLER_EDITOR_CORE)
+#include "net_frontend_lobby.h"
+#endif
 #if defined(IS_WASM)
 #include "present_sdlrenderer.h"
 #include "web_default_config.h"
@@ -120,6 +124,8 @@ static SDL_GPUTransferBuffer *s_pTransferBuffer = NULL;
 static int s_iGPUPresentSkipFrames = 0;
 #if defined(IS_ANDROID)
 static bool s_bAndroidDefaultConfigPending = false;
+static bool s_bAndroidLifecycleWatchInstalled = false;
+static SDL_AtomicInt s_iAndroidResumePending;
 #endif
 int g_bVRMode = 0;
 int g_iVRMaxFrames = 0;   /* --vr-frames N: stop after N stereo frames are presented (0 = unlimited) */
@@ -896,6 +902,26 @@ static void ROLLERVRInitAudio(const char *midi_root)
 }
 
 #endif
+#if defined(IS_ANDROID)
+static bool SDLCALL ROLLERAndroidLifecycleEvent(void *pUserData,
+                                                SDL_Event *pEvent)
+{
+  (void)pUserData;
+  if (!pEvent)
+    return true;
+  if (pEvent->type == SDL_EVENT_WILL_ENTER_BACKGROUND ||
+      pEvent->type == SDL_EVENT_DID_ENTER_BACKGROUND) {
+    /* Event watches may run on any thread.  Only touch SDL atomics here. */
+    SDL_SetAtomicInt(&iTicksPending, 0);
+  } else if (pEvent->type == SDL_EVENT_DID_ENTER_FOREGROUND) {
+    SDL_SetAtomicInt(&s_iAndroidResumePending, 1);
+  }
+  return true;
+}
+#endif
+
+//-------------------------------------------------------------------------------------------------
+
 int InitSDL(char *whiplash_root, const char *midi_root)
 {
   RaiseFileDescriptorLimit();
@@ -924,6 +950,19 @@ int InitSDL(char *whiplash_root, const char *midi_root)
 #if defined(ROLLER_VR_BUILD)
   if (g_bVRMode)
     vr_diag_init(); // roller-vr.log next to the exe: stdout, stderr and SDL_Log
+#endif
+
+#if defined(IS_ANDROID)
+  /* Android lifecycle events are callback-only in SDL3.  The callback below
+     performs atomic bookkeeping; all game, input and netcode work stays on
+     the main thread in UpdateSDL(). */
+  if (!s_bAndroidLifecycleWatchInstalled) {
+    if (SDL_AddEventWatch(ROLLERAndroidLifecycleEvent, NULL))
+      s_bAndroidLifecycleWatchInstalled = true;
+    else
+      SDL_Log("Android lifecycle event watch failed: %s", SDL_GetError());
+  }
+  SDL_DisableScreenSaver();
 #endif
 
 #if defined(IS_WASM)
@@ -1892,6 +1931,13 @@ void InitTRACKS(const char *szDataRoot)
 
 void ShutdownSDL()
 {
+#if defined(IS_ANDROID)
+  if (s_bAndroidLifecycleWatchInstalled) {
+    SDL_RemoveEventWatch(ROLLERAndroidLifecycleEvent, NULL);
+    s_bAndroidLifecycleWatchInstalled = false;
+  }
+  SDL_EnableScreenSaver();
+#endif
   if (!g_bSnapshotMode) {
     DIGIClearAllStream();
     MIDI_Shutdown();
@@ -2104,6 +2150,23 @@ void UpdateDebugLoop()
 
 void UpdateSDL()
 {
+#if defined(IS_ANDROID)
+  if (SDL_CompareAndSwapAtomicInt(&s_iAndroidResumePending, 1, 0)) {
+    /* SDL's timer and sensor threads may have been stopped independently of
+       the native main thread.  Never turn that wall-clock gap into queued
+       simulation ticks or retain a touch that Android cancelled on pause. */
+    SDL_SetAtomicInt(&iTicksPending, 0);
+    ullLastTickTimeNs = SDL_GetTicksNS();
+    InputHandleAppResume();
+#if !defined(ROLLER_EDITOR_CORE)
+    NetFrontendAppResumed();
+#endif
+  }
+#endif
+  NetPump();
+#if !defined(IS_WASM) && !defined(ROLLER_EDITOR_CORE)
+  NetFrontendPump();
+#endif
 #if defined(IS_WASM)
   g_iCRTFilterMode = 0;
 #endif
@@ -2904,6 +2967,10 @@ int ROLLERfilelength(const char *szFile)
 //-------------------------------------------------------------------------------------------------
 
 static uint32 g_uiRandState = 1;
+static uint64 g_ullRandDraws;
+
+uint64 ROLLERrandDrawCountGet(void) { return g_ullRandDraws; }
+void ROLLERrandDrawCountSet(uint64 ullCount) { g_ullRandDraws = ullCount; }
 
 void ROLLERsrand(unsigned int uiSeed)
 {
@@ -2914,6 +2981,7 @@ void ROLLERsrand(unsigned int uiSeed)
 
 int ROLLERrandRaw(void)
 {
+  ++g_ullRandDraws;
   g_uiRandState = g_uiRandState * 1103515245u + 12345u;
   return (int)((g_uiRandState >> 16) & 0x7FFFu);
 }
