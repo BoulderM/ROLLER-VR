@@ -2,7 +2,7 @@
 
 [![Release][rel-shd]][rel-url] [![License][lc-shd]][lc-url]
 
-![Roller logo](./images/whiplash.gif)
+![ROLLER VR logo](./images/whiplash-vr.gif)
 
 **Cockpit VR for Whiplash / Fatal Racing (1995).** ROLLER VR is a fork of
 [ROLLER](https://github.com/FatalDecomp/ROLLER), the open-source
