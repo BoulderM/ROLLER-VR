@@ -97,6 +97,14 @@ one, left and right or A change it, and B goes back. Changes apply at once and
 are saved in `roller-vr.ini` next to the executable (`vignette=off|mild|strong`,
 `hud=original|spread|wide`; you can edit that file too).
 
+![The pause menu with the VR OPTIONS row](./images/vr-pause-menu.png)
+
+![The VR OPTIONS page](./images/vr-options-page.png)
+
+_Both are screenshots from the game, taken with the VR screenshot shortcut (both
+thumbstick clicks). The HUD sheet shows behind the pause menu, as it does in the
+flat game._
+
 **Vignette** (off by default). Fast racing in VR can make some people feel
 unwell: the world swings around while your body sits still. The vignette softly
 darkens the edges of your view only while the car's own view is turning hard
@@ -104,6 +112,13 @@ darkens the edges of your view only while the car's own view is turning hard
 the peripheral motion that causes it. Turning your own head never triggers it.
 While the page is open the ring is shown at its darkest, so you can see what
 each setting does.
+
+![Vignette off, mild and strong at their darkest](./images/vr-vignette.png)
+
+_An illustration, made with the real ring texture and scaling code on a
+screenshot of a race; it assumes a field of view of about 90 degrees, so a
+headset will differ a little. In play the ring only closes in while the car's
+view is turning hard._
 
 **HUD layout.** The game draws its HUD as one sheet, which the headset shows
 floating in front of your face. The other two layouts keep every element exactly
@@ -116,6 +131,11 @@ middle of your view stays clear. The pause menu is always one sheet.
 | ORIGINAL | The sheet as the game draws it (the default)   |
 | SPREAD   | The clusters 1.5 times further from the centre |
 | WIDE     | The clusters twice as far from the centre      |
+
+![The three HUD layouts](./images/vr-hud-layouts.png)
+
+_An illustration: the game's own HUD graphics, placed with the layout code's
+numbers on a screenshot of a race (about 90 degrees of view assumed)._
 
 ## Command line
 
