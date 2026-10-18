@@ -42,7 +42,8 @@ pause menu and screenshots all work there. Touch and simple-controller bindings
 are included but have not been tried on real hardware, and other headsets and
 OpenXR runtimes should work in principle but are untested. On Linux the same
 code runs against [Monado](https://monado.freedesktop.org/), which is how it is
-tested without a headset.
+tested without a headset. Upstream's newer online multiplayer is part of the
+code but has not been tried in VR.
 
 ## Quick start (Windows)
 
@@ -155,10 +156,10 @@ The VR sources are `PROJECTS/ROLLER/vr_*.c`; the rest of the tree is ROLLER.
 ## Relationship to upstream
 
 This repository is a separate repository, not a GitHub fork. The `roller-vr`
-branch sits on top of ROLLER's `master` as of 2026-08-14 (`0c6b8b4`) and is the
-default branch here. Upstream changes after that point are not merged in yet.
-The VR work is meant to be offered to upstream eventually; until its history is
-cleaned up for that, it lives here.
+branch carries the VR work on top of ROLLER's `master` and is the default branch
+here. Upstream is merged in regularly; the last sync was on 2026-10-18, up to
+upstream commit `d5b1221`. The VR work is meant to be offered to upstream
+eventually; until its history is cleaned up for that, it lives here.
 
 Please report problems with the VR mode in this repository's
 [issues](https://github.com/BoulderM/ROLLER-vr/issues) and attach
