@@ -334,24 +334,5 @@ VrInputEvent vr_input_map_step(VrInputMapState *s, const VrInputActions *in, boo
         if (ev == VR_INPUT_EVENT_NONE)
             ev = VR_INPUT_EVENT_SCREENSHOT;
     }
-
-    /* The left click alone, held VR_COMFORT_GRACE_MS, fires VR_INPUT_EVENT_COMFORT once per
-     * press. The grace time is what keeps the first click of a screenshot pair from counting,
-     * and nothing fires while the screenshot gesture is still disarmed (a click left over from
-     * it). The click itself still reaches the pad. */
-    if (in->left_stick_click && !in->right_stick_click && !s->shot_disarmed) {
-        if (!s->comfort_fired) {
-            s->comfort_ms += dt > VR_MAX_STEP_MS ? VR_MAX_STEP_MS : dt;
-            if (s->comfort_ms >= VR_COMFORT_GRACE_MS) {
-                s->comfort_fired = true;
-                if (ev == VR_INPUT_EVENT_NONE)
-                    ev = VR_INPUT_EVENT_COMFORT;
-            }
-        }
-    } else {
-        s->comfort_ms = 0;
-        if (!in->left_stick_click)
-            s->comfort_fired = false;
-    }
     return ev;
 }

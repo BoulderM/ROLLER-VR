@@ -203,51 +203,6 @@ static void test_texture(const char *dump_path)
     free(px);
 }
 
-static void test_settings(void)
-{
-    VrVignetteLevel l = VR_VIGNETTE_OFF;
-    CHECK(vr_vignette_settings_parse("vignette=mild\n", &l) && l == VR_VIGNETTE_MILD);
-    CHECK(vr_vignette_settings_parse("  Vignette = STRONG  \r\n", &l) && l == VR_VIGNETTE_STRONG);
-    CHECK(vr_vignette_settings_parse("; roller-vr\n# note\nother=1\nvignette=off", &l) && l == VR_VIGNETTE_OFF);
-    CHECK(vr_vignette_settings_parse("vignette=mild\nvignette=strong\n", &l) && l == VR_VIGNETTE_STRONG); /* last wins */
-    l = VR_VIGNETTE_MILD;
-    CHECK(!vr_vignette_settings_parse("vignette=medium\n", &l) && l == VR_VIGNETTE_MILD); /* untouched */
-    CHECK(vr_vignette_settings_parse("vignette=strong\nvignette=bogus\n", &l) && l == VR_VIGNETTE_STRONG); /* bad line ignored */
-    CHECK(!vr_vignette_settings_parse("", &l));
-    CHECK(!vr_vignette_settings_parse(NULL, &l));
-    CHECK(!vr_vignette_settings_parse("; vignette=strong\n", &l));      /* a comment is not a setting */
-    CHECK(!vr_vignette_settings_parse("myvignette=strong\n", &l));      /* whole key only */
-
-    char out[512];
-    size_t n = vr_vignette_settings_format(NULL, VR_VIGNETTE_MILD, out, sizeof out);
-    CHECK(n > 0 && n == strlen(out));
-    CHECK(strstr(out, "vignette=mild\n") != NULL);
-    CHECK(vr_vignette_settings_parse(out, &l) && l == VR_VIGNETTE_MILD);
-
-    /* Existing text: other lines kept, the vignette line replaced in place, extras dropped. */
-    const char *old = "; mine\nother=1\nvignette=off\nmore=2\nvignette=mild\n";
-    n = vr_vignette_settings_format(old, VR_VIGNETTE_STRONG, out, sizeof out);
-    CHECK(n > 0);
-    CHECK(strstr(out, "; mine\n") && strstr(out, "other=1\n") && strstr(out, "more=2\n"));
-    CHECK(strstr(out, "vignette=strong\n") != NULL);
-    CHECK(strstr(out, "vignette=off") == NULL && strstr(out, "vignette=mild") == NULL);
-    CHECK(strstr(strstr(out, "vignette=strong") + 1, "vignette=") == NULL); /* exactly one */
-    CHECK(strstr(out, "other=1") < strstr(out, "vignette=strong") && strstr(out, "vignette=strong") < strstr(out, "more=2"));
-
-    /* No key yet, no trailing newline: appended on its own line. */
-    n = vr_vignette_settings_format("other=1", VR_VIGNETTE_OFF, out, sizeof out);
-    CHECK(n > 0 && strcmp(out, "other=1\nvignette=off\n") == 0);
-    /* Round trip for every level. */
-    for (int lv = 0; lv < VR_VIGNETTE_LEVEL_COUNT; ++lv) {
-        VrVignetteLevel back = (VrVignetteLevel)99;
-        n = vr_vignette_settings_format("x=1\n", (VrVignetteLevel)lv, out, sizeof out);
-        CHECK(n > 0 && vr_vignette_settings_parse(out, &back) && back == (VrVignetteLevel)lv);
-    }
-    /* Too small a buffer: nothing is claimed to be written. */
-    CHECK(vr_vignette_settings_format(old, VR_VIGNETTE_STRONG, out, 8) == 0);
-    CHECK(vr_vignette_settings_format(old, VR_VIGNETTE_STRONG, NULL, 0) == 0);
-}
-
 int main(int argc, char **argv)
 {
     test_names();
@@ -255,7 +210,6 @@ int main(int argc, char **argv)
     test_step();
     test_geometry();
     test_texture(argc > 1 ? argv[1] : NULL);
-    test_settings();
 
     if (g_failures) {
         printf("%d check(s) FAILED\n", g_failures);

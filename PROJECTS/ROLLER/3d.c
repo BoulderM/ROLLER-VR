@@ -44,6 +44,7 @@
 #include "vr_runtime.h"
 #include "vr_diag.h"
 #include "vr_input_pad.h"
+#include "vr_options.h"
 #endif
 #include <SDL3/SDL.h>
 #if defined(__EMSCRIPTEN__)
@@ -4373,6 +4374,18 @@ void play_game_uninit()
   tick_on = -1;
 }
 
+#if defined(ROLLER_VR_BUILD)
+//-------------------------------------------------------------------------------------------------
+// VR build, pause menu page 5 (VR OPTIONS): step the selected row's value and save it.
+static void vr_pause_adjust_option(int iDir)
+{
+  VrOptions opts = vr_options_current();
+
+  if (vr_options_adjust(&opts, g_iVRPauseRow, iDir))
+    vr_options_set(&opts);
+}
+
+#endif
 //-------------------------------------------------------------------------------------------------
 //00013A10
 void game_keys()
@@ -4501,7 +4514,11 @@ void game_keys()
                     if (game_req) {
                       if (!pausewindow && req_edit > 0) {
                         --req_edit;
+#if defined(ROLLER_VR_BUILD)
+                        if (req_edit == 3 && !g_bVRMode)
+#else
                         if (req_edit == 3)
+#endif
                           --req_edit;
                       }
                       if (pausewindow == 2 && control_select < 4)
@@ -4516,6 +4533,10 @@ void game_keys()
                           --sound_edit;
                         }
                       }
+#if defined(ROLLER_VR_BUILD)
+                      if (pausewindow == 5)
+                        g_iVRPauseRow = vr_options_row_up(g_iVRPauseRow);
+#endif
                     } else if (replaytype == 2 && game_req != replaypanel) {
                       switch (game_req + controlicon) {
                         case 7:
@@ -4540,6 +4561,10 @@ void game_keys()
                     break;
                   case WHIP_SCANCODE_LEFT:
                     if (game_req) {
+#if defined(ROLLER_VR_BUILD)
+                      if (pausewindow == 5)
+                        vr_pause_adjust_option(-1);
+#endif
                       if (pausewindow == 4) {
                         switch (sound_edit) {
                           case 1:
@@ -4574,6 +4599,10 @@ void game_keys()
                   case WHIP_SCANCODE_RIGHT:
                     iGameReqState = game_req;
                     if (game_req) {
+#if defined(ROLLER_VR_BUILD)
+                      if (pausewindow == 5)
+                        vr_pause_adjust_option(+1);
+#endif
                       if (pausewindow == 4) {
                         switch (sound_edit) {
                           case 1:
@@ -4612,7 +4641,11 @@ void game_keys()
                     if (game_req) {
                       if (!pausewindow && req_edit < 6) {
                         ++req_edit;
+#if defined(ROLLER_VR_BUILD)
+                        if (req_edit == 3 && !g_bVRMode)
+#else
                         if (req_edit == 3)
+#endif
                           ++req_edit;
                       }
                       if (pausewindow == 2 && control_select > 0)
@@ -4625,6 +4658,10 @@ void game_keys()
                         else
                           ++sound_edit;
                       }
+#if defined(ROLLER_VR_BUILD)
+                      if (pausewindow == 5)
+                        g_iVRPauseRow = vr_options_row_down(g_iVRPauseRow);
+#endif
                     } else if (replaytype == 2 && game_req != replaypanel) {
                       switch (controlicon) {
                         case 1:
@@ -4863,6 +4900,13 @@ void game_keys()
                 pausewindow = 4;
                 goto PROCESS_NEXT_KEY;
               case 3:
+#if defined(ROLLER_VR_BUILD)
+                if (g_bVRMode) {
+                  g_iVRPauseRow = VR_OPTIONS_ROW_VIGNETTE;
+                  pausewindow = 5;
+                  goto PROCESS_NEXT_KEY;
+                }
+#endif
                 pausewindow = 2;
                 controlrelease = -1;
                 define_mode = 0;
@@ -4886,6 +4930,13 @@ void game_keys()
               default:
                 goto PROCESS_NEXT_KEY;
             }
+#if defined(ROLLER_VR_BUILD)
+          case 5:
+            if (g_iVRPauseRow == VR_OPTIONS_ROW_EXIT)
+              goto EXIT_PAUSE_MENU;
+            vr_pause_adjust_option(+1);
+            goto PROCESS_NEXT_KEY;
+#endif
           case 1:
             pausewindow = 2;
             calibrate_mode = 0;

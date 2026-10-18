@@ -17,6 +17,7 @@
 #include "vr_quad.h"
 #include "vr_quad_math.h"
 #include "vr_vignette.h"
+#include "vr_options.h"
 #include "png_writer.h"  /* RollerWriteRgbaPng -- menu quad PNG dump test hook */
 #include "sound.h"       /* pal_addr -- menu quad */
 
@@ -89,7 +90,7 @@ static int s_hud_quad_run_frames;     /* frames submitted since it last started 
 static int s_hud_quad_total_frames;   /* frames submitted this session (PNG dump schedule) */
 
 /* Comfort vignette: see its section below. Used by vr_init() and vr_shutdown(). */
-static void vr_vignette_load_setting(void);
+static void vr_options_load(void);
 static void vr_vignette_release(void);
 
 VkQueue vr_runtime_vk_queue(void) { return s_vk_queue; }
@@ -947,7 +948,7 @@ bool vr_init(void)
         return false;
     }
 
-    vr_vignette_load_setting();
+    vr_options_load();
 
     /* --- 6c. Quad layers: same swapchain format as the eyes, created on first
      * use (vr_menu_quad_ensure_size()) --- */
@@ -1520,17 +1521,18 @@ static Uint32 view_configs_height(Uint32 i)
     return s_view_configs[i].recommendedImageRectHeight;
 }
 
-/* --- Comfort vignette ----------------------------------------------------
- * Off, mild or strong (vr_vignette.h). A head-locked quad layer, black with a clear centre,
+/* --- VR options and the comfort vignette -----------------------------------
+ * The options (vr_options.h): the comfort vignette (off, mild or strong) and the HUD layout
+ * (vr_hud_layout.h). They live in roller-vr.ini next to the executable (else the per-user pref
+ * path), are loaded when the session starts, and are changed from the pause menu's VR OPTIONS
+ * page (func2.c / 3d.c call vr_options_set()).
+ *
+ * The vignette (vr_vignette.h) is a head-locked quad layer, black with a clear centre,
  * submitted between the eyes and the HUD/pause quads and scaled each frame to close in as the
  * cockpit view turns faster (curves, ramps, loops). The turn rate is measured on the cockpit
  * rotation before the head pose is added (vr_camera_compose_last_cockpit_rot()), so moving
  * your own head never darkens anything. It is only shown while racing; in the pause menu the
  * level's peak is shown as a preview of the setting.
- *
- * The level lives in roller-vr.ini next to the executable (vr_vignette_settings_*), is
- * cycled by a lone left thumbstick click while paused (vr_comfort_cycle()), and can be forced
- * for a run with the ROLLER_VR_VIGNETTE environment variable (off|mild|strong; not saved).
  *
  * The quad sits 5 m ahead, so its edge has almost no stereo disparity, and is scaled by
  * vr_vignette_quad_scale(): its width is 2 * VR_VIGNETTE_TEX_EXTENT * scale * distance. */
@@ -1539,8 +1541,7 @@ static Uint32 view_configs_height(Uint32 i)
 #define VR_VIGNETTE_MAX_DT_S        0.1f
 #define VR_SETTINGS_FILE            "roller-vr.ini"
 
-static VrVignetteLevel s_vignette_level = VR_VIGNETTE_OFF;
-static bool s_vignette_env_override;     /* ROLLER_VR_VIGNETTE set: shown, not saved over the file's value */
+static VrOptions s_options = { VR_VIGNETTE_OFF, VR_HUD_ORIGINAL };
 static VrVignetteState s_vignette_state;
 static VrQuad s_vignette_quad;
 static SDL_GPUTexture *s_vignette_texture;
@@ -1587,59 +1588,48 @@ static char *vr_settings_read(void)
     return NULL;
 }
 
-static void vr_vignette_load_setting(void)
+static void vr_options_load(void)
 {
-    s_vignette_level = VR_VIGNETTE_OFF;
-    s_vignette_env_override = false;
+    s_options = vr_options_default();
     char *text = vr_settings_read();
+    int found = 0;
     if (text) {
-        VrVignetteLevel from_file;
-        if (vr_vignette_settings_parse(text, &from_file))
-            s_vignette_level = from_file;
+        found = vr_options_parse(text, &s_options);
         SDL_free(text);
     }
-    const char *env = SDL_getenv("ROLLER_VR_VIGNETTE");
-    VrVignetteLevel from_env;
-    if (env && vr_vignette_level_parse(env, &from_env)) {
-        s_vignette_level = from_env;
-        s_vignette_env_override = true;
-    }
-    vr_log_line("INFO", "comfort vignette: %s%s", vr_vignette_level_name(s_vignette_level),
-                s_vignette_env_override ? " (ROLLER_VR_VIGNETTE)" : "");
+    vr_log_line("INFO", "VR options: vignette %s, HUD layout %s (%d setting(s) read from %s)",
+                vr_vignette_level_name(s_options.vignette), vr_hud_layout_name(s_options.hud), found,
+                VR_SETTINGS_FILE);
 }
 
-static void vr_vignette_save_setting(void)
+VrOptions vr_options_current(void)
 {
+    return s_options;
+}
+
+void vr_options_set(const VrOptions *o)
+{
+    if (!o)
+        return;
+    s_options = *o;
+    vr_log_line("INFO", "VR options: vignette %s, HUD layout %s", vr_vignette_level_name(s_options.vignette),
+                vr_hud_layout_name(s_options.hud));
     char *old_text = vr_settings_read();
     char out[2048];
-    size_t n = vr_vignette_settings_format(old_text, s_vignette_level, out, sizeof(out));
+    size_t n = vr_options_format(old_text, &s_options, out, sizeof(out));
     SDL_free(old_text);
     if (n == 0) {
-        vr_log_line("WARN", "comfort vignette: could not format %s", VR_SETTINGS_FILE);
+        vr_log_line("WARN", "VR options: could not format %s", VR_SETTINGS_FILE);
         return;
     }
     char path[512];
     for (int pref = 0; pref <= 1; ++pref) {
         if (vr_settings_path(pref != 0, path, sizeof(path)) && SDL_SaveFile(path, out, n)) {
-            vr_log_line("INFO", "comfort vignette: saved %s to %s", vr_vignette_level_name(s_vignette_level), path);
+            vr_log_line("INFO", "VR options: saved to %s", path);
             return;
         }
     }
-    vr_log_line("WARN", "comfort vignette: could not save %s: %s", VR_SETTINGS_FILE, SDL_GetError());
-}
-
-void vr_comfort_cycle(void)
-{
-    /* Only from the pause menu: the world is still there and the preview shows the new level. */
-    if ((int)eFrontendCurrentState != (int)eFRONTEND_STATE_PAUSE_OVERLAY) {
-        vr_log_line("INFO", "comfort vignette: cycle ignored outside the pause menu (frontend state %d)",
-                    (int)eFrontendCurrentState);
-        return;
-    }
-    s_vignette_level = vr_vignette_level_next(s_vignette_level);
-    s_vignette_env_override = false; /* a deliberate choice replaces the run's override */
-    vr_log_line("INFO", "comfort vignette: now %s", vr_vignette_level_name(s_vignette_level));
-    vr_vignette_save_setting();
+    vr_log_line("WARN", "VR options: could not save %s: %s", VR_SETTINGS_FILE, SDL_GetError());
 }
 
 static void vr_vignette_release(void)
@@ -1719,7 +1709,7 @@ static bool vr_vignette_quad_frame(bool eyes_rendered, XrCompositionLayerQuad *o
     if (dt > VR_VIGNETTE_MAX_DT_S)
         dt = VR_VIGNETTE_MAX_DT_S;
 
-    if (s_vignette_level == VR_VIGNETTE_OFF || !eyes_rendered || !(racing_now || paused_now)) {
+    if (s_options.vignette == VR_VIGNETTE_OFF || !eyes_rendered || !(racing_now || paused_now)) {
         s_vignette_state.strength = 0.0f;
         if (!paused_now)
             s_vignette_have_prev = false; /* no continuity across menus and loads; pausing keeps it */
@@ -1735,14 +1725,14 @@ static bool vr_vignette_quad_frame(bool eyes_rendered, XrCompositionLayerQuad *o
             memcpy(s_vignette_prev_rot, cur, sizeof(cur));
             s_vignette_have_prev = true;
         }
-        float strength = vr_vignette_step(&s_vignette_state, s_vignette_level, rate, dt, paused_now);
+        float strength = vr_vignette_step(&s_vignette_state, s_options.vignette, rate, dt, paused_now);
         if (racing_now) {
             /* For tuning from a real session's log: how hard the car's view really turns. */
             if (rate > s_vignette_log_max_rate)
                 s_vignette_log_max_rate = rate;
             if (++s_vignette_log_frames >= VR_VIGNETTE_LOG_EVERY_FRAMES) {
                 vr_log_line("INFO", "vignette: %s strength %.2f, cockpit turn rate now %.0f, max %.0f deg/s over %d frames",
-                            vr_vignette_level_name(s_vignette_level), strength, rate,
+                            vr_vignette_level_name(s_options.vignette), strength, rate,
                             s_vignette_log_max_rate, s_vignette_log_frames);
                 s_vignette_log_frames = 0;
                 s_vignette_log_max_rate = 0.0f;
@@ -1762,7 +1752,7 @@ static bool vr_vignette_quad_frame(bool eyes_rendered, XrCompositionLayerQuad *o
     if (ok && !s_vignette_showing) {
         s_vignette_run_frames = 0;
         vr_log_line("INFO", "vignette: shown (%s, strength %.2f, frontend state %d, presented frame %d)",
-                    vr_vignette_level_name(s_vignette_level), s_vignette_state.strength,
+                    vr_vignette_level_name(s_options.vignette), s_vignette_state.strength,
                     (int)eFrontendCurrentState, s_vr_frames_presented);
     } else if (!ok && s_vignette_showing) {
         vr_log_line("INFO", "vignette: hidden after %d frames (frontend state %d, presented frame %d)",
@@ -1814,9 +1804,12 @@ static void vr_hud_quad_maybe_dump(SDL_GPUTexture *tex, int w, int h)
  * pause menu is drawn into the same 2D buffer as the HUD), and only on a tick
  * whose eyes rendered: on other states scrbuf holds a menu picture, not a HUD,
  * and on a tick with no eye render the texture was not rebuilt. */
-static bool vr_hud_quad_frame(bool eyes_rendered, XrCompositionLayerQuad *out_layer)
+static int vr_hud_quad_frame(bool eyes_rendered, XrCompositionLayerQuad out_layers[VR_HUD_MAX_PANELS])
 {
     bool ok = false;
+    int layer_count = 0;
+    static int s_hud_logged_panels = -1;       /* the layout last logged, to log a change once */
+    static VrHudLayout s_hud_logged_layout = VR_HUD_LAYOUT_COUNT;
     static int s_hud_failed_w, s_hud_failed_h; /* don't retry (and re-log) a size that already failed */
     const bool paused_now = (int)eFrontendCurrentState == (int)eFRONTEND_STATE_PAUSE_OVERLAY;
     const bool racing_now = (int)eFrontendCurrentState == (int)eFRONTEND_STATE_RACING || paused_now;
@@ -1850,11 +1843,39 @@ static bool vr_hud_quad_frame(bool eyes_rendered, XrCompositionLayerQuad *out_la
                               -VR_HUD_QUAD_DISTANCE_M },
             };
             /* Source alpha: palette index 0 is transparent (indexed_to_rgba()). */
+            XrCompositionLayerQuad full_layer;
             ok = vr_quad_submit(&s_hud_quad, hud_tex, (uint32_t)hud_w, (uint32_t)hud_h,
                                 s_view_space, hud_pose,
                                 (XrExtent2Df){ quad_width_m, quad_width_m * (float)hud_h / (float)hud_w },
-                                true, out_layer);
+                                true, &full_layer);
             if (ok) {
+                /* One layer showing the whole sheet, or (HUD layout SPREAD or WIDE, racing only: the
+                 * pause menu is always the one centred sheet) one layer per panel, each showing its
+                 * rectangle of the same swapchain image at its own place. */
+                out_layers[0] = full_layer;
+                layer_count = 1;
+                VrHudPanel panels[VR_HUD_MAX_PANELS];
+                int panel_count = paused_now ? 0 : vr_hud_panels(s_options.hud, hud_w, hud_h, quad_width_m, panels);
+                if (panel_count > 1) {
+                    for (int i = 0; i < panel_count; i++) {
+                        out_layers[i] = full_layer;
+                        out_layers[i].pose.position.x = hud_pose.position.x + panels[i].right_m;
+                        out_layers[i].pose.position.y = hud_pose.position.y + panels[i].up_m;
+                        out_layers[i].size.width = panels[i].width_m;
+                        out_layers[i].size.height = panels[i].height_m;
+                        out_layers[i].subImage.imageRect.offset.x = panels[i].x;
+                        out_layers[i].subImage.imageRect.offset.y = panels[i].y;
+                        out_layers[i].subImage.imageRect.extent.width = panels[i].w;
+                        out_layers[i].subImage.imageRect.extent.height = panels[i].h;
+                    }
+                    layer_count = panel_count;
+                }
+                if (s_hud_logged_layout != s_options.hud || s_hud_logged_panels != layer_count) {
+                    s_hud_logged_layout = s_options.hud;
+                    s_hud_logged_panels = layer_count;
+                    vr_log_line("INFO", "hud quad: layout %s, %d layer(s)%s", vr_hud_layout_name(s_options.hud),
+                                layer_count, paused_now ? " (paused: the pause menu is always one sheet)" : "");
+                }
                 s_hud_quad_total_frames++;
                 vr_hud_quad_maybe_dump(hud_tex, hud_w, hud_h);
                 if (s_shot_active)
@@ -1873,7 +1894,7 @@ static bool vr_hud_quad_frame(bool eyes_rendered, XrCompositionLayerQuad *out_la
     if (ok)
         s_hud_quad_run_frames++;
     s_hud_quad_showing = ok;
-    return ok;
+    return ok ? layer_count : 0;
 }
 
 bool vr_run_frame(void)
@@ -2008,9 +2029,9 @@ bool vr_run_frame(void)
     /* HUD quad (--vr-menu races only): racing ticks whose eyes rendered, so
      * the HUD texture eye 0 built from scrbuf is this tick's. Also a local
      * that outlives xrEndFrame() below. */
-    XrCompositionLayerQuad hud_quad_layer;
-    bool have_hud_quad = g_bVRMenuMode
-        && vr_hud_quad_frame(s_frame_view_count_for_layer > 0, &hud_quad_layer);
+    XrCompositionLayerQuad hud_quad_layers[VR_HUD_MAX_PANELS];
+    int hud_quad_count = g_bVRMenuMode
+        ? vr_hud_quad_frame(s_frame_view_count_for_layer > 0, hud_quad_layers) : 0;
     /* Comfort vignette: racing, or previewed in the pause menu. Same rules as the HUD quad. */
     XrCompositionLayerQuad vignette_quad_layer;
     bool have_vignette_quad = vr_vignette_quad_frame(s_frame_view_count_for_layer > 0, &vignette_quad_layer);
@@ -2031,7 +2052,8 @@ bool vr_run_frame(void)
      * order given, first is bottom-most): the projection layer first, quads
      * on top. A projection layer with viewCount 0 is invalid, so it is only
      * included when the race view rendered this tick. */
-    const XrCompositionLayerBaseHeader *submitted_layers[4];
+    /* projection, vignette, menu, then up to VR_HUD_MAX_PANELS HUD panels */
+    const XrCompositionLayerBaseHeader *submitted_layers[3 + VR_HUD_MAX_PANELS];
     uint32_t submitted_layer_count = 0;
     if (s_frame_view_count_for_layer > 0)
         submitted_layers[submitted_layer_count++] = (const XrCompositionLayerBaseHeader *)&projection_layer;
@@ -2039,8 +2061,8 @@ bool vr_run_frame(void)
         submitted_layers[submitted_layer_count++] = (const XrCompositionLayerBaseHeader *)&vignette_quad_layer;
     if (have_menu_quad)
         submitted_layers[submitted_layer_count++] = (const XrCompositionLayerBaseHeader *)&menu_quad_layer;
-    if (have_hud_quad)
-        submitted_layers[submitted_layer_count++] = (const XrCompositionLayerBaseHeader *)&hud_quad_layer;
+    for (int i = 0; i < hud_quad_count; i++)
+        submitted_layers[submitted_layer_count++] = (const XrCompositionLayerBaseHeader *)&hud_quad_layers[i];
     XrFrameEndInfo frame_end_info = {
         .type = XR_TYPE_FRAME_END_INFO,
         .displayTime = s_frame_state.predictedDisplayTime,

@@ -31,8 +31,9 @@ gamepad or the keyboard.
   Gamepads, wheels and keyboards that are plugged in before you start work too.
 - **VR screenshots.** Clicking both thumbsticks saves both eye images plus the
   HUD or menu picture.
-- **Comfort vignette.** Optional (off by default): the edges of your view darken
-  while the car's view turns hard, in a mild or strong setting.
+- **VR options in the pause menu.** An optional comfort vignette (the edges of
+  your view darken while the car's view turns hard) and a choice of where the
+  HUD sits, both from a VR OPTIONS page in the game's own pause menu.
 - **The flat game is still there.** The VR code is compiled only with `-Dvr`, so
   a plain `zig build` produces the normal desktop game.
 
@@ -75,34 +76,46 @@ hear nothing, pause and switch them on in the SOUND item.
 
 With the Steam Frame controllers; gamepads and wheels use the same layout.
 
-| Input                          | Action                                               |
-| ------------------------------ | ---------------------------------------------------- |
-| Left stick                     | Steer                                                |
-| Right trigger                  | Accelerate (hold it fully; see below)                |
-| Left trigger                   | Brake                                                |
-| Left / right shoulder or grip  | Shift down / up (the gearbox is automatic otherwise) |
-| Menu (Start)                   | Pause menu; D-pad and A navigate, Menu resumes       |
-| View + Menu, held 2 s          | Quit from anywhere (Menu alone without View)         |
-| Both thumbstick clicks         | Save a screenshot to `screenshots/`                  |
-| Left thumbstick click (paused) | Cycle the comfort vignette: off, mild, strong        |
+| Input                         | Action                                               |
+| ----------------------------- | ---------------------------------------------------- |
+| Left stick                    | Steer                                                |
+| Right trigger                 | Accelerate (hold it fully; see below)                |
+| Left trigger                  | Brake                                                |
+| Left / right shoulder or grip | Shift down / up (the gearbox is automatic otherwise) |
+| Menu (Start)                  | Pause menu; D-pad and A navigate, Menu resumes       |
+| View + Menu, held 2 s         | Quit from anywhere (Menu alone without View)         |
+| Both thumbstick clicks        | Save a screenshot to `screenshots/`                  |
 
 After GO the engine needs about a second before the car moves, so keep the right
 trigger fully down. A short or light pull may not get the car moving.
 
-## Comfort vignette
+## VR options
 
-Fast racing in VR can make some people feel unwell: the world swings around
-while your body sits still. The vignette softly darkens the edges of your view
-only while the car's own view is turning hard (corners, ramps, loops) and fades
-back out afterwards, which takes away much of the peripheral motion that causes
-it. Turning your own head never triggers it.
+The pause menu has a VR OPTIONS row (between SOUND and DEFINE CONTROLS). It
+opens a page in the game's own style with two options; D-pad up and down pick
+one, left and right or A change it, and B goes back. Changes apply at once and
+are saved in `roller-vr.ini` next to the executable (`vignette=off|mild|strong`,
+`hud=original|spread|wide`; you can edit that file too).
 
-It is off by default. Pause the game and click the left thumbstick to cycle off,
-mild and strong; while the pause menu is open the ring is shown at its darkest
-so you can see what the setting does. The choice is saved in `roller-vr.ini`
-next to the executable (`vignette=off`, `mild` or `strong`; you can also edit
-that file), and setting the environment variable `ROLLER_VR_VIGNETTE` forces a
-level for one run.
+**Vignette** (off by default). Fast racing in VR can make some people feel
+unwell: the world swings around while your body sits still. The vignette softly
+darkens the edges of your view only while the car's own view is turning hard
+(corners, ramps, loops) and fades back out afterwards, which takes away much of
+the peripheral motion that causes it. Turning your own head never triggers it.
+While the page is open the ring is shown at its darkest, so you can see what
+each setting does.
+
+**HUD layout.** The game draws its HUD as one sheet, which the headset shows
+floating in front of your face. The other two layouts keep every element exactly
+as it is, in the same corner, but cut the sheet into its five clusters
+(position, timer, lap, minimap, speedometer) and move them further out, so the
+middle of your view stays clear. The pause menu is always one sheet.
+
+| Layout   | What it does                                   |
+| -------- | ---------------------------------------------- |
+| ORIGINAL | The sheet as the game draws it (the default)   |
+| SPREAD   | The clusters 1.5 times further from the centre |
+| WIDE     | The clusters twice as far from the centre      |
 
 ## Command line
 

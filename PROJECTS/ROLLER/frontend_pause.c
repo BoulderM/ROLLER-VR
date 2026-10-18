@@ -6,6 +6,9 @@
 #include "rollersound.h"
 #include "replay.h"
 #include "roller.h"
+#if defined(ROLLER_VR_BUILD)
+#include "vr_options.h"
+#endif
 
 //-------------------------------------------------------------------------------------------------
 
@@ -76,6 +79,10 @@ static void frontend_pause_register_volume_bar(int iItem, int iY)
 
 static int frontend_pause_main_item_valid(int iItem)
 {
+#if defined(ROLLER_VR_BUILD)
+  if (g_bVRMode)
+    return iItem >= 0 && iItem <= 6;            // slot 3 is the VR OPTIONS row
+#endif
   return iItem == 0 || iItem == 1 || iItem == 2 ||
          iItem == 4 || iItem == 5 || iItem == 6;
 }
@@ -91,6 +98,10 @@ static int frontend_pause_current_item_valid(void)
       return graphic_mode >= 0 && graphic_mode <= 16;
     case 4:
       return sound_edit >= 0 && sound_edit <= 7;
+#if defined(ROLLER_VR_BUILD)
+    case 5:
+      return g_iVRPauseRow >= VR_OPTIONS_ROW_EXIT && g_iVRPauseRow <= VR_OPTIONS_ROW_HUD;
+#endif
     default:
       return 0;
   }
@@ -107,6 +118,10 @@ static int frontend_pause_item_valid(int iItem)
       return iItem >= 0 && iItem <= 16;
     case 4:
       return iItem >= 0 && iItem <= 7;
+#if defined(ROLLER_VR_BUILD)
+    case 5:
+      return iItem >= VR_OPTIONS_ROW_EXIT && iItem <= VR_OPTIONS_ROW_HUD;
+#endif
     default:
       return 0;
   }
@@ -127,6 +142,11 @@ static void frontend_pause_set_current_item(int iItem)
     case 4:
       sound_edit = iItem;
       break;
+#if defined(ROLLER_VR_BUILD)
+    case 5:
+      g_iVRPauseRow = iItem;
+      break;
+#endif
     default:
       break;
   }
@@ -244,6 +264,13 @@ static void frontend_pause_register_mouse_items(void)
 
   switch (pausewindow) {
     case 0:
+#if defined(ROLLER_VR_BUILD)
+      if (g_bVRMode) {                          // seven rows, one every 12 lines from y=32
+        for (iItem = 0; iItem <= 6; ++iItem)
+          frontend_pause_register_row(iItem, 32 + iItem * 12, 12);
+        break;
+      }
+#endif
       frontend_pause_register_row(0, 32, 12);
       frontend_pause_register_row(1, 44, 12);
       frontend_pause_register_row(2, 56, 12);
@@ -274,6 +301,13 @@ static void frontend_pause_register_mouse_items(void)
       frontend_pause_register_volume_bar(3, 72);
       frontend_pause_register_volume_bar(4, 84);
       break;
+#if defined(ROLLER_VR_BUILD)
+    case 5:                                     // VR OPTIONS: two options at y=48 and 60, the exit row at 72
+      frontend_pause_register_row(VR_OPTIONS_ROW_VIGNETTE, 44, 12);
+      frontend_pause_register_row(VR_OPTIONS_ROW_HUD, 56, 12);
+      frontend_pause_register_row(VR_OPTIONS_ROW_EXIT, 68, 12);
+      break;
+#endif
     default:
       break;
   }

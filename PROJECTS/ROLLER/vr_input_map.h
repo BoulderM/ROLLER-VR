@@ -48,7 +48,6 @@ enum {
  * of the frame time: it is 50 ms only when the frame time divides 50. */
 #define VR_TAP_PULSE_MS       50u
 #define VR_MAX_STEP_MS       100u /* dt clamp: one long hitch cannot complete the 2 s hold */
-#define VR_COMFORT_GRACE_MS  200u /* a lone left thumbstick click waits this long for the right one (screenshot) */
 #define VR_SQUEEZE_PRESS    0.6f  /* squeeze -> bumper hysteresis */
 #define VR_SQUEEZE_RELEASE  0.4f
 
@@ -77,8 +76,7 @@ typedef enum {
     VR_INPUT_EVENT_NONE = 0,
     VR_INPUT_EVENT_RECENTER, /* clean Back+Start tap released before VR_SAFETY_HOLD_MS (consumed by M4) */
     VR_INPUT_EVENT_QUIT,     /* safety exit: request a clean quit */
-    VR_INPUT_EVENT_SCREENSHOT, /* both thumbstick clicks down together: save the eye images */
-    VR_INPUT_EVENT_COMFORT    /* left thumbstick click alone, held VR_COMFORT_GRACE_MS: cycle the vignette */
+    VR_INPUT_EVENT_SCREENSHOT /* both thumbstick clicks down together: save the eye images */
 } VrInputEvent;
 
 typedef struct {
@@ -97,9 +95,6 @@ typedef struct {
     bool start_only_fired;
     /* Screenshot gesture: set when it fires, cleared once both clicks are released. */
     bool shot_disarmed;
-    /* Comfort gesture: how long the left click has been down alone, and whether it has fired. */
-    uint32_t comfort_ms;
-    bool comfort_fired;
 } VrInputMapState;
 
 /* --- OpenXR action set and binding table ---------------------------------- */

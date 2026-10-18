@@ -71,15 +71,4 @@ float vr_vignette_quad_scale(float strength);
 #define VR_VIGNETTE_FADE_WIDTH 0.6f
 void vr_vignette_fill_texture(uint8_t *rgba);
 
-/* The setting file, roller-vr.ini next to the executable: plain `key=value` lines, of which only
- * `vignette=off|mild|strong` is read. Comments (; or #), blank lines and unknown keys are
- * ignored by the reader and kept by the writer. */
-/* true if text holds a valid vignette= line (the last valid one wins); *out is untouched
- * otherwise. */
-bool vr_vignette_settings_parse(const char *text, VrVignetteLevel *out);
-/* Writes old_text (may be NULL) into out with its vignette= line set to `level`: replaced in
- * place, further vignette= lines dropped, appended if there was none. Returns the length
- * written (without the terminating NUL), or 0 if cap is too small. */
-size_t vr_vignette_settings_format(const char *old_text, VrVignetteLevel level, char *out, size_t cap);
-
 #endif /* VR_VIGNETTE_H */

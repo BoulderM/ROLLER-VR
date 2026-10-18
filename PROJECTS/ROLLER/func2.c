@@ -18,6 +18,9 @@
 #include "moving.h"
 #include "graphics.h"
 #include "snapshot.h"
+#if defined(ROLLER_VR_BUILD)
+#include "vr_options.h"
+#endif
 #include <stdio.h>
 #include "roller.h"
 #include <string.h>
@@ -2817,6 +2820,50 @@ void prt_lettercol(tBlockHeader *pBlockHeader, char byChar, int *piXPos, int *pi
   scr_size = iSavedScrSize;                     // Restore original screen size
 }
 
+#if defined(ROLLER_VR_BUILD)
+//-------------------------------------------------------------------------------------------------
+// VR build, pause menu. The main page gets a VR OPTIONS row in slot 3 (the flat game never shows
+// that slot), drawn exactly like page 0 of display_paused() below, with the rows after it one line
+// further down; and page 5 is the VR OPTIONS page itself, laid out like the SOUND page.
+static void vr_pause_draw_main(void)
+{
+  uint8 byColor;
+
+  blankwindow(0, 0, 320, 200);
+  prt_centrecol(rev_vga[1], config_buffer, 160, 16, 171);
+  byColor = req_edit ? 0x83 : 0x8F;
+  prt_centrecol(rev_vga[1], &config_buffer[64], 160, 36, byColor);
+  byColor = req_edit == 1 ? 0x8F : 0x83;
+  prt_centrecol(rev_vga[1], replaytype == 2 ? &config_buffer[192] : &config_buffer[128], 160, 48, byColor);
+  byColor = req_edit == 2 ? 0x8F : 0x83;
+  prt_centrecol(rev_vga[1], &config_buffer[256], 160, 60, byColor);
+  byColor = req_edit == 3 ? 0x8F : 0x83;
+  prt_centrecol(rev_vga[1], "VR OPTIONS", 160, 72, byColor);
+  byColor = req_edit == 4 ? 0x8F : 0x83;
+  prt_centrecol(rev_vga[1], &config_buffer[384], 160, 84, byColor);
+  byColor = req_edit == 5 ? 0x8F : 0x83;
+  prt_centrecol(rev_vga[1], &config_buffer[576], 160, 96, byColor);
+  byColor = req_edit == 6 ? 0x8F : 0x83;
+  prt_centrecol(rev_vga[1], &config_buffer[640], 160, 108, byColor);
+}
+
+static void vr_pause_draw_options(void)
+{
+  VrOptions opts = vr_options_current();
+  int iRow;
+
+  blankwindow(0, 0, 320, 200);
+  prt_centrecol(rev_vga[1], "VR OPTIONS", 160, 16, 171);
+  for (iRow = VR_OPTIONS_ROW_VIGNETTE; iRow <= VR_OPTIONS_ROW_HUD; ++iRow) {
+    uint8 byColor = g_iVRPauseRow == iRow ? 0x8F : 0x83;
+    int iY = 48 + (iRow - VR_OPTIONS_ROW_VIGNETTE) * 12;
+    prt_rightcol(rev_vga[1], vr_options_row_label(iRow), 172, iY, byColor);
+    prt_stringcol(rev_vga[1], vr_options_row_value(&opts, iRow), 175, iY, byColor);
+  }
+  prt_rightcol(rev_vga[1], &config_buffer[832], 172, 72, g_iVRPauseRow ? 0x83 : 0x8F);
+}
+
+#endif
 //-------------------------------------------------------------------------------------------------
 //00019360
 void display_paused()
@@ -2924,6 +2971,12 @@ void display_paused()
 
   switch (pausewindow) {
     case 0:
+#if defined(ROLLER_VR_BUILD)
+      if (g_bVRMode) {
+        vr_pause_draw_main();
+        break;
+      }
+#endif
       blankwindow(0, 0, 320, 200);
       prt_centrecol(rev_vga[1], config_buffer, 160, 16, 171);
       if (req_edit)
@@ -3690,6 +3743,11 @@ void display_paused()
         byBackColor = 0x8F;
       prt_rightcol(rev_vga[1], &config_buffer[832], 172, 132, byBackColor);
       break;
+#if defined(ROLLER_VR_BUILD)
+    case 5:
+      vr_pause_draw_options();                  // VR build only: the VR OPTIONS page
+      break;
+#endif
     default:
       return;                                   // Switch on pause window mode: 0=main menu, 2=controls, 3=graphics, 4=sound
   }

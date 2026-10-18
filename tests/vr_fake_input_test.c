@@ -27,12 +27,13 @@ typedef struct {
     uint64_t name_ms[MAX_NAMES];
     int n_names;
     char rises[MAX_RISES + 1];      /* rising edges: U dpad_up, D dpad_down, A, B */
+    uint64_t rise_at[MAX_RISES];    /* when each of them happened (ms) */
     int n_rises;
-    int press_count, bad_press_len; /* every press must last exactly 60 ms */
+    int press_count;                /* presses seen; press_ms[] holds how long each lasted */
+    uint64_t press_ms[MAX_RISES];
     int drive_frames, drive_bad;    /* steady drive frames, and those with wrong values */
     int stray_trigger;              /* right_trigger set outside the drive step */
     int shot_frames, stray_shot;    /* both thumbstick clicks inside / outside the drive step's three windows */
-    int comfort_frames;             /* the left click alone, 6.8 s to 7.2 s into the drive (while paused) */
     int pause_frames;               /* Start alone, inside the drive step's two pause/resume taps */
     int stray_hold;                 /* view or menu set outside the exit steps */
     uint64_t hold_run_ms, hold_best_ms, hold_start_ms, hold_best_start_ms;
@@ -68,13 +69,15 @@ static bool track(Button *b, bool down, uint64_t now, char mark, Trace *tr)
     bool fell = false;
     if (down && !b->down) {
         b->rise_ms = now;
-        if (tr->n_rises < MAX_RISES)
+        if (tr->n_rises < MAX_RISES) {
+            tr->rise_at[tr->n_rises] = now;
             tr->rises[tr->n_rises++] = mark;
+        }
     }
     if (!down && b->down) {
+        if (tr->press_count < MAX_RISES)
+            tr->press_ms[tr->press_count] = now - b->rise_ms;
         tr->press_count++;
-        if (now - b->rise_ms != 60)
-            tr->bad_press_len++;
         fell = true;
     }
     b->down = down;
@@ -132,23 +135,19 @@ static void run_sim(bool stuck_on_main, Trace *tr)
         if (strcmp(cur, "drive") == 0) {
             uint64_t rel = now - tr->drive_ms;
             float want_x = 0.0f;
-            if (rel >= 5000 && rel < 8000) want_x = -0.7f;
-            if (rel >= 8000 && rel < 11000) want_x = 0.7f;
+            if (rel >= 4000 && rel < 6000) want_x = -0.7f;
+            if (rel >= 14500 && rel < 17000) want_x = 0.7f;
+            if (rel >= 17000 && rel < 19500) want_x = -0.7f;
             tr->drive_frames++;
             if (in.right_trigger != 1.0f || fabsf(in.left_stick_x - want_x) > 1e-6f)
                 tr->drive_bad++;
         }
-        /* The screenshot gesture: both clicks for 300 ms at 3 s, 7.5 s (while paused) and 12 s into the drive. */
-        /* The comfort vignette cycle: the left click alone, held 400 ms (while paused). */
-        bool comfort_press = strcmp(cur, "drive") == 0 && in.left_stick_click && !in.right_stick_click
-                          && now - tr->drive_ms >= 6800 && now - tr->drive_ms < 7200;
-        if (comfort_press) {
-            tr->comfort_frames++;
-        } else if (in.left_stick_click || in.right_stick_click) {
+        /* The screenshot gesture: both clicks for 300 ms at 3 s, 11.6 s (paused, on the VR OPTIONS page) and 18 s into the drive. */
+        if (in.left_stick_click || in.right_stick_click) {
             uint64_t rel = now - tr->drive_ms;
             bool in_window = strcmp(cur, "drive") == 0
-                          && ((rel >= 3000 && rel < 3300) || (rel >= 7500 && rel < 7800)
-                              || (rel >= 12000 && rel < 12300));
+                          && ((rel >= 3000 && rel < 3300) || (rel >= 11600 && rel < 11900)
+                              || (rel >= 18000 && rel < 18300));
             if (in_window && in.left_stick_click && in.right_stick_click)
                 tr->shot_frames++;
             else
@@ -157,10 +156,10 @@ static void run_sim(bool stuck_on_main, Trace *tr)
         /* The trigger may be held while in drive, and on the frame that leaves it. */
         if (in.right_trigger != 0.0f && strcmp(cur, "drive") != 0 && strcmp(prev, "drive") != 0)
             tr->stray_trigger++;
-        /* Start alone, 60 ms at 6 s (pause) and 9 s (resume) into the drive. */
+        /* Start alone, 60 ms at 6 s (pause) and 13.2 s (resume) into the drive. */
         bool pause_tap = strcmp(cur, "drive") == 0 && in.menu && !in.view
                       && ((now - tr->drive_ms >= 6000 && now - tr->drive_ms < 6060)
-                          || (now - tr->drive_ms >= 9000 && now - tr->drive_ms < 9060));
+                          || (now - tr->drive_ms >= 13200 && now - tr->drive_ms < 13260));
         if (pause_tap)
             tr->pause_frames++;
         else if ((in.view || in.menu) && !is_exit_step(cur))
@@ -209,21 +208,31 @@ static void test_full_sequence(void)
     check_names(&tr, want, (int)(sizeof(want) / sizeof(want[0])));
     CHECK(tr.done);
     CHECK(!tr.timed_out);
-    /* 8 dpad_up rising edges, then 8 dpad_down; A and B at their steps. */
-    CHECK(strcmp(tr.rises, "UUUUUUUUABDDDDDDDDA") == 0);
-    CHECK(tr.n_rises == 19);
-    CHECK(tr.press_count == 19);
-    CHECK(tr.bad_press_len == 0);
-    /* Drive: throttle held, steering -0.7 then +0.7 in the promised windows. */
-    CHECK(tr.drive_frames == 1500);
+    /* 8 dpad_up rising edges, then 8 dpad_down; A and B at their steps; then, in the drive step, the
+     * pause menu walk: down x3 (to VR OPTIONS), A (open), A (vignette), down (HUD LAYOUT), A, A
+     * (layout twice), B (back). */
+    CHECK(strcmp(tr.rises, "UUUUUUUUABDDDDDDDDADDDAADAAB") == 0);
+    CHECK(tr.n_rises == 28);
+    CHECK(tr.press_count == 28);
+    if (tr.n_rises == 28) {
+        /* The menu walk: 200 ms presses (the paused scene runs at ~12 fps on the test host), the others 60 ms. */
+        static const uint64_t want_rel[9] = { 6900, 7400, 7900, 8600, 9200, 9800, 10400, 11000, 12400 };
+        for (int i = 0; i < 19; ++i)
+            CHECK(tr.press_ms[i] == 60);
+        for (int i = 0; i < 9; ++i) {
+            CHECK(tr.rise_at[19 + i] - tr.drive_ms == want_rel[i]);
+            CHECK(tr.press_ms[19 + i] == 200);
+        }
+    }
+    /* Drive: throttle held, steering in the promised windows (left, then right and left once resumed). */
+    CHECK(tr.drive_frames == 2050);
     CHECK(tr.drive_bad == 0);
     CHECK(tr.stray_trigger == 0);
     CHECK(tr.shot_frames == 90); /* three 300 ms presses at 10 ms frames */
-    CHECK(tr.comfort_frames == 40); /* one 400 ms left click */
     CHECK(tr.pause_frames == 12); /* two 60 ms Start taps */
     CHECK(tr.stray_shot == 0);
     CHECK(tr.drive_ms - tr.countdown_ms == 12000);
-    CHECK(tr.release_ms - tr.drive_ms == 15000);
+    CHECK(tr.release_ms - tr.drive_ms == 20500);
     CHECK(tr.exit_ms - tr.release_ms == 1000);
     /* Safety exit: view+menu held continuously for at least 2250 ms, and nothing else. */
     CHECK(tr.hold_best_ms >= 2250);
@@ -248,7 +257,8 @@ static void test_stuck_on_main(void)
         CHECK(waited > 20000 && waited <= 20010);
     }
     CHECK(strcmp(tr.rises, "UUUUUUUUA") == 0);
-    CHECK(tr.bad_press_len == 0);
+    for (int i = 0; i < tr.press_count && i < MAX_RISES; ++i)
+        CHECK(tr.press_ms[i] == 60);
     CHECK(tr.drive_frames == 0);
     CHECK(tr.hold_best_ms >= 2250);
     CHECK(tr.hold_best_start_ms == tr.exit_ms);

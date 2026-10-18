@@ -14,16 +14,29 @@
 #define FAKE_WAIT_TIMEOUT_MS 20000u
 #define FAKE_RACE_TIMEOUT_MS 60000u
 #define FAKE_COUNTDOWN_MS    12000u
-#define FAKE_DRIVE_MS        15000u
+#define FAKE_DRIVE_MS        20500u
 #define FAKE_RELEASE_MS       1000u
 #define FAKE_SHOT_PRESS_MS     300u /* both thumbstick clicks: the screenshot gesture */
-#define FAKE_SHOT_1_MS        3000u /* into the drive step */
-#define FAKE_SHOT_2_MS       12000u
+#define FAKE_SHOT_1_MS        3000u /* into the drive step, racing */
 #define FAKE_PAUSE_MS         6000u /* Start tap: opens the pause menu */
-#define FAKE_COMFORT_MS       6800u /* the left click alone (comfort vignette cycle), while paused, */
-#define FAKE_COMFORT_PRESS_MS  400u /* held past VR_COMFORT_GRACE_MS */
-#define FAKE_SHOT_PAUSED_MS   7500u /* the screenshot gesture again, while paused */
-#define FAKE_RESUME_MS        9000u /* Start tap: closes it */
+/* In the pause menu (the game ignores driving input then): down x3 to the VR OPTIONS row, A opens the
+ * page, A steps the vignette, down to HUD LAYOUT, A twice steps the layout, a screenshot of the page,
+ * B goes back, Start closes the menu. The paused scene runs at about 12 frames per second on the slow
+ * software compositor of the test host, so these presses are 200 ms (a 60 ms press can fall between two
+ * frames and be lost) and at least 500 ms apart. */
+#define FAKE_MENU_PRESS_MS    200u
+#define FAKE_MENU_DOWN_1_MS   6900u
+#define FAKE_MENU_DOWN_2_MS   7400u
+#define FAKE_MENU_DOWN_3_MS   7900u
+#define FAKE_MENU_OPEN_MS     8600u
+#define FAKE_MENU_VIGNETTE_MS 9200u
+#define FAKE_MENU_ROW_DOWN_MS 9800u
+#define FAKE_MENU_HUD_1_MS   10400u
+#define FAKE_MENU_HUD_2_MS   11000u
+#define FAKE_SHOT_PAUSED_MS  11600u /* the screenshot gesture again, on the VR OPTIONS page */
+#define FAKE_MENU_BACK_MS    12400u
+#define FAKE_RESUME_MS       13200u /* Start tap: closes the pause menu */
+#define FAKE_SHOT_2_MS       18000u /* racing again, with the options just chosen */
 #define FAKE_EXIT_HOLD_MS     2600u /* > VR_SAFETY_HOLD_MS + the 250 ms grace */
 
 enum {
@@ -50,6 +63,9 @@ static const char *enter(VrFakeInput *f, int step, uint64_t now)
 }
 
 static bool press(uint64_t t) { return t < FAKE_PRESS_MS; }
+
+/* true while t is within [start, start + len). */
+static bool hold(uint64_t t, uint64_t start, uint64_t len) { return t >= start && t < start + len; }
 
 /* Writes the current step's output for this frame. Returns the step to hand over
  * to, or -1 to stay. */
@@ -102,17 +118,22 @@ static int run_step(const VrFakeInput *f, VrFakeScreen screen, uint64_t now, VrI
         break;
     case S_DRIVE:
         out->right_trigger = 1.0f;
-        if (t >= 5000 && t < 8000) out->left_stick_x = -0.7f;
-        if (t >= 8000 && t < 11000) out->left_stick_x = 0.7f;
-        if ((t >= FAKE_SHOT_1_MS && t < FAKE_SHOT_1_MS + FAKE_SHOT_PRESS_MS)
-            || (t >= FAKE_SHOT_PAUSED_MS && t < FAKE_SHOT_PAUSED_MS + FAKE_SHOT_PRESS_MS)
-            || (t >= FAKE_SHOT_2_MS && t < FAKE_SHOT_2_MS + FAKE_SHOT_PRESS_MS))
+        if (t >= 4000 && t < 6000) out->left_stick_x = -0.7f;
+        if (t >= 14500 && t < 17000) out->left_stick_x = 0.7f;
+        if (t >= 17000 && t < 19500) out->left_stick_x = -0.7f;
+        if (hold(t, FAKE_SHOT_1_MS, FAKE_SHOT_PRESS_MS) || hold(t, FAKE_SHOT_PAUSED_MS, FAKE_SHOT_PRESS_MS)
+            || hold(t, FAKE_SHOT_2_MS, FAKE_SHOT_PRESS_MS))
             out->left_stick_click = out->right_stick_click = true;
-        if (t >= FAKE_COMFORT_MS && t < FAKE_COMFORT_MS + FAKE_COMFORT_PRESS_MS)
-            out->left_stick_click = true;
-        if ((t >= FAKE_PAUSE_MS && t < FAKE_PAUSE_MS + FAKE_PRESS_MS)
-            || (t >= FAKE_RESUME_MS && t < FAKE_RESUME_MS + FAKE_PRESS_MS))
+        if (hold(t, FAKE_PAUSE_MS, FAKE_PRESS_MS) || hold(t, FAKE_RESUME_MS, FAKE_PRESS_MS))
             out->menu = true;
+        if (hold(t, FAKE_MENU_DOWN_1_MS, FAKE_MENU_PRESS_MS) || hold(t, FAKE_MENU_DOWN_2_MS, FAKE_MENU_PRESS_MS)
+            || hold(t, FAKE_MENU_DOWN_3_MS, FAKE_MENU_PRESS_MS) || hold(t, FAKE_MENU_ROW_DOWN_MS, FAKE_MENU_PRESS_MS))
+            out->dpad_down = true;
+        if (hold(t, FAKE_MENU_OPEN_MS, FAKE_MENU_PRESS_MS) || hold(t, FAKE_MENU_VIGNETTE_MS, FAKE_MENU_PRESS_MS)
+            || hold(t, FAKE_MENU_HUD_1_MS, FAKE_MENU_PRESS_MS) || hold(t, FAKE_MENU_HUD_2_MS, FAKE_MENU_PRESS_MS))
+            out->button_a = true;
+        if (hold(t, FAKE_MENU_BACK_MS, FAKE_MENU_PRESS_MS))
+            out->button_b = true;
         if (t >= FAKE_DRIVE_MS) next = S_RELEASE;
         break;
     case S_RELEASE:

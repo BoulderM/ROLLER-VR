@@ -335,6 +335,8 @@ pub fn build(b: *std.Build) void {
                 "PROJECTS/ROLLER/vr_quad.c",
                 "PROJECTS/ROLLER/vr_quad_math.c",
                 "PROJECTS/ROLLER/vr_vignette.c",
+                "PROJECTS/ROLLER/vr_hud_layout.c",
+                "PROJECTS/ROLLER/vr_options.c",
             },
         });
 
@@ -1660,6 +1662,8 @@ fn configureRenderQueue3DTests(
     vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_fake_input_test", "tests/vr_fake_input_test.c", "PROJECTS/ROLLER/vr_fake_input.c"));
     vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_menu_quad_yaw_test", "tests/vr_menu_quad_yaw_test.c", "PROJECTS/ROLLER/vr_quad_math.c"));
     vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_vignette_test", "tests/vr_vignette_test.c", "PROJECTS/ROLLER/vr_vignette.c"));
+    vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_hud_layout_test", "tests/vr_hud_layout_test.c", "PROJECTS/ROLLER/vr_hud_layout.c"));
+    vr_pure_tests.dependOn(addPureCTestMulti(b, target, optimize, c_flags, "vr_options_test", "tests/vr_options_test.c", &.{ "PROJECTS/ROLLER/vr_options.c", "PROJECTS/ROLLER/vr_vignette.c", "PROJECTS/ROLLER/vr_hud_layout.c" }));
 
     const test_step = b.step("test", "Run focused unit tests and optional seam checks");
     test_step.dependOn(render_queue_tests);
@@ -2368,6 +2372,19 @@ fn addPureCTest(
     test_source: []const u8,
     module_source: []const u8,
 ) *Build.Step {
+    return addPureCTestMulti(b, target, optimize, c_flags, name, test_source, &.{module_source});
+}
+
+/// Same, for a module that is made of several pure sources.
+fn addPureCTestMulti(
+    b: *Build,
+    target: ResolvedTarget,
+    optimize: OptimizeMode,
+    c_flags: []const []const u8,
+    name: []const u8,
+    test_source: []const u8,
+    module_sources: []const []const u8,
+) *Build.Step {
     const mod = b.createModule(.{
         .target = target,
         .optimize = optimize,
@@ -2376,7 +2393,11 @@ fn addPureCTest(
     mod.addIncludePath(b.path("PROJECTS/ROLLER"));
     mod.addCSourceFiles(.{
         .flags = c_flags,
-        .files = &.{ test_source, module_source },
+        .files = &.{test_source},
+    });
+    mod.addCSourceFiles(.{
+        .flags = c_flags,
+        .files = module_sources,
     });
     const exe = b.addExecutable(.{
         .name = name,
