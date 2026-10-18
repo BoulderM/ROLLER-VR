@@ -167,6 +167,13 @@ next to the executable (or in `%APPDATA%\ROLLER\roller-vr` if that folder is not
 writable) and lists the OpenXR runtime, the controller profile the runtime
 picked and the audio settings.
 
+## Made with Claude Code
+
+The VR mode was written with [Claude Code](https://claude.com/claude-code),
+Anthropic's AI coding assistant, working under the direction of the repository
+owner, who set the goals and tested the builds on a real headset. The ROLLER
+code underneath is upstream's work.
+
 ## Credits
 
 - **ROLLER**, the reimplementation this is built on, was created by
