@@ -1,201 +1,214 @@
-# ROLLER
+# ROLLER VR
 
-[![CI][ci-shd]][ci-url] [![LC][lc-shd]][lc-url] [![Download][dl-shd]][dl-url]
-[![Play in your browser][web-shd]][web-url]
-
-https://fatal.racing/
+[![Release][rel-shd]][rel-url] [![License][lc-shd]][lc-url]
 
 ![Roller logo](./images/whiplash.gif)
 
-This project aims to implement all the functionality of the 1995 game
-Whiplash/Fatal Racing in a way that builds and runs on modern PCs. Where
-necessary, DOS-specific functions are substituted with SDL and Windows/Unix
-equivalents. For instruction-matching decomp, see
-https://github.com/FatalDecomp/ROLLER-matching
+**Cockpit VR for Whiplash / Fatal Racing (1995).** ROLLER VR is a fork of
+[ROLLER](https://github.com/FatalDecomp/ROLLER), the open-source
+reimplementation of the game that runs on modern PCs, with an
+[OpenXR](https://www.khronos.org/openxr/) mode added. Sit in the car, look
+around with your head, and drive with the headset's controllers, a wheel, a
+gamepad or the keyboard.
 
-[![On track!](https://img.youtube.com/vi/JvoiQTRjt88/maxresdefault.jpg)](https://www.youtube.com/watch?v=JvoiQTRjt88)
+> This project exists because of ROLLER, created by
+> [Zizin13](https://github.com/Zizin13) and built out by the
+> [FatalDecomp](https://github.com/FatalDecomp) contributors. They reverse
+> engineered a 30-year-old DOS game and made it run natively; the VR mode is a
+> layer on top of that work. See [Credits](#credits).
 
-## Play
+## What it adds
 
-**[Play ROLLER in your browser][web-url]** with the bundled freeware demo, or
-import an image of a legally owned retail disc for the full game. No install is
-required.
+- **Real stereo cockpit view.** Both eyes are rendered with the headset's head
+  pose and per-eye field of view, scaled from the car's hitbox to real-world
+  size. The whole track is drawn in VR, so far scenery that the flat game culls
+  stays visible.
+- **Menus and HUD in the headset.** The menu screens, including the pause menu,
+  float in front of you as a quad layer; the HUD is a head-locked quad layer.
+  The menu is also mirrored in a small desktop window.
+- **Controller driving.** OpenXR actions for the Valve Steam Frame, Oculus Touch
+  and simple controller profiles feed a virtual gamepad that player 1 reads.
+  Gamepads, wheels and keyboards that are plugged in before you start work too.
+- **VR screenshots.** Clicking both thumbsticks saves both eye images plus the
+  HUD or menu picture.
+- **The flat game is still there.** The VR code is compiled only with `-Dvr`, so
+  a plain `zig build` produces the normal desktop game.
 
-Native installations require assets from a retail copy of the game. Download the
-latest native version from the
-[releases](https://github.com/FatalDecomp/ROLLER/releases) page and extract it
-wherever you want. On initial launch, select a CD image (CUE/BIN or ISO) to
-extract the assets. Press the \` key to access additional settings.
+## Status
 
-## VR (OpenXR) mode
+An early release, tested on one setup: Windows 11, SteamVR 2.17-2.18 and a Steam
+Frame with its controllers. Graphics, head tracking, menus, driving, sound, the
+pause menu and screenshots all work there. Touch and simple-controller bindings
+are included but have not been tried on real hardware, and other headsets and
+OpenXR runtimes should work in principle but are untested. On Linux the same
+code runs against [Monado](https://monado.freedesktop.org/), which is how it is
+tested without a headset.
 
-This fork adds a cockpit VR mode built on OpenXR. Both eyes are rendered with
-the real head pose, the menus and the HUD float in front of you as quad layers,
-and the controllers drive the car. It was developed and played on a Windows 11
-PC with SteamVR and a Steam Frame (Frame controllers); the same code runs
-against Monado on Linux, which is how it is tested without a headset. Bindings
-for Touch and simple controllers are included but have not been tried on real
-hardware. A plain `zig build` still produces the normal flat game.
+## Quick start (Windows)
 
-Like the flat game it needs game data from your own copy of Whiplash/Fatal
-Racing; nothing from the game is included. Put the contents of the disc's
-`FATDATA` folder in a folder called `fatdata`, then start the VR build with the
-folder that contains it:
+You need your own copy of Whiplash / Fatal Racing; nothing from the game is
+included.
 
+1. Download `roller-vr-<version>-windows.zip` from the
+   [releases](https://github.com/BoulderM/ROLLER-vr/releases) page and extract
+   it to a normal drive folder (for example `C:\Games\Fatal`). The game writes
+   its log and settings next to the executable.
+1. Make SteamVR the active OpenXR runtime: SteamVR > Settings > Developer > "Set
+   SteamVR as OpenXR runtime".
+1. Copy the contents of the `FATDATA` folder from your disc into a new folder
+   called `fatdata` next to `roller-vr.exe`.
+1. Start SteamVR, then run `RUN-VR.bat`. `RUN-VR-DEMO.bat` starts the
+   attract-mode demo instead of the menu.
+
+From a command line,
+`roller-vr --vr --whiplash-root <folder containing fatdata>` does the same. On
+first run the game binds player 1 to the VR controller in `ROLLER.INI` (six
+lines, the original is saved once as `ROLLER.INI.bak`).
+
+The retail `FATAL.INI` ships with sound effects and music switched off. If you
+hear nothing, pause and switch them on in the SOUND item.
+
+## Controls
+
+With the Steam Frame controllers; gamepads and wheels use the same layout.
+
+| Input                         | Action                                               |
+| ----------------------------- | ---------------------------------------------------- |
+| Left stick                    | Steer                                                |
+| Right trigger                 | Accelerate (hold it fully; see below)                |
+| Left trigger                  | Brake                                                |
+| Left / right shoulder or grip | Shift down / up (the gearbox is automatic otherwise) |
+| Menu (Start)                  | Pause menu; D-pad and A navigate, Menu resumes       |
+| View + Menu, held 2 s         | Quit from anywhere (Menu alone without View)         |
+| Both thumbstick clicks        | Save a screenshot to `screenshots/`                  |
+
+After GO the engine needs about a second before the car moves, so keep the right
+trigger fully down. A short or light pull may not get the car moving.
+
+## Command line
+
+| Option                  | Effect                                          |
+| ----------------------- | ----------------------------------------------- |
+| `--vr`                  | Run in VR; boots to the main menu               |
+| `--whiplash-root <dir>` | Folder that contains `fatdata`                  |
+| `--vr-demo`             | Start the attract-mode demo instead of the menu |
+| `--vr-frames N`         | Quit after N frames (for tests)                 |
+
+The remaining `--vr-*` options (`--vr-fake-input`, `--vr-fake-head`,
+`--vr-eye-dump-dir`, and so on) are test hooks used for headset-free runs.
+
+## Building from source
+
+Needs [Zig 0.15.2](https://ziglang.org/download/) (`mise install` sets it up).
+
+```bash
+git clone https://github.com/BoulderM/ROLLER-vr.git
+cd ROLLER-vr
 ```
-roller-vr --vr --whiplash-root <folder containing fatdata>
-```
 
-A log is written to `roller-vr.log` next to the executable. Prebuilt Windows
-binaries (no game data) are on the
-[releases](https://github.com/BoulderM/ROLLER-vr/releases) page.
-
-Build it with Zig 0.15.2:
-
-- Linux: `zig build -Dvr -Doptimize=ReleaseSafe`. Needs the OpenXR loader and
-  Vulkan development packages (`libopenxr-dev`, `libvulkan-dev`).
-- Windows, cross-built from Linux: set `OPENXR_SDK_PATH` to an extracted
+- **Linux:** `zig build -Dvr -Doptimize=ReleaseSafe`. Needs the OpenXR loader
+  and Vulkan development packages (`libopenxr-dev`, `libvulkan-dev`).
+- **Windows, cross-built from Linux:** set `OPENXR_SDK_PATH` to an extracted
   OpenXR-SDK release (`include/` and `lib/openxr_loader.lib`) and `VULKAN_SDK`
   to a Vulkan SDK (`Include/`, `Lib/vulkan-1.lib`), then
   `zig build -Dvr -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe`. Ship
-  `openxr_loader.dll` next to the executable. Always pass `-Doptimize`: the
-  default Debug build is far too slow for VR.
+  `openxr_loader.dll` next to the executable.
+
+**Always pass `-Doptimize`.** The default Debug build runs with sanitizers and
+is far too slow for VR.
 
 The VR build uses a patched SDL
 ([BoulderM/SDL](https://github.com/BoulderM/SDL), branch `vr-gpu-properties`)
-that exposes SDL_GPU's Vulkan device so OpenXR can bind to it. It is fetched
+that exposes SDL_GPU's Vulkan device so OpenXR can bind to it. Zig fetches it
 automatically, and only for `-Dvr`.
 
-Controls with the Frame controllers: the left stick steers, the right trigger
-accelerates (hold it fully; the engine needs about a second after GO), the left
-trigger brakes, and the shoulder buttons or grips shift (the gearbox is
-automatic otherwise). Menu (Start) pauses and opens the pause menu, D-pad and A
-navigate menus, holding View and Menu for two seconds quits from anywhere, and
-clicking both thumbsticks saves the two eye images to a `screenshots` folder.
-The retail `FATAL.INI` has sound effects and music switched off; they can be
-switched on in the pause menu's SOUND item. The VR build ignores the flat game's
-`SignsOnTop` option, which draws sign cards through walls.
-
-## About
-
-Debug symbol dump generated with wdump, part of:
-https://github.com/open-watcom/open-watcom-v2
-
-Useful tool in generating nice asm output with symbols from wdump applied:
-https://github.com/fonic/wcdatool
-
-Directions on how to use wcdatool and get remote debugging working with open
-watcom: https://www.youtube.com/watch?v=bG9tEZOSrQg
-
-Note: wdump symbol offsets do not account for DOS4GW.EXE. Load
-FATAL.EXE_split_dos4g_payload.exe (FATAL.EXE with DOS4GW.EXE split off,
-generated by wcdatool) into Ida/Ghidra to have matching symbol offsets.
-
-Hashes of executables used for decomp:
-
-FATAL.EXE
-
-- `md5: 812EEE1404ECDFD87FF765281DF89720`
-- `SHA256: 7789768C0A6CDC213EAF7B1AD8CC125531EB3FE7C213ECCAC6188E58F428687E`
-
-FATAL.EXE_split_dos4g_payload.exe
-
-- `md5: 05C2B0730641663133D76DD2CA552B4C`
-- `SHA256: A4AD4131DBBFF9884DA4687D8B579B81117E6D23525950D942DF2DF585E2A11E`
-
-## External Dependencies Used:
-
-- SDL3.2.22: https://github.com/libsdl-org/SDL
-- SDL_Image3.2.4: https://github.com/libsdl-org/SDL_image
-- WildMIDI 0.4.6: https://github.com/Mindwerks/wildmidi
-- libcdio-2.3.0: https://github.com/libcdio/libcdio
-- Nuklear 4.13.2: https://github.com/Immediate-Mode-UI/Nuklear
-
-## Build
-
-Video instructions: https://www.youtube.com/watch?v=QEDGhvvZ9XU
-
-### Clone the repository
+Tests that need no headset, GPU or game data:
 
 ```bash
-git clone https://github.com/zizin13/roller.git
-cd roller
+zig build test-vr-pure
+zig build -Dvr test-vr-sdl
 ```
 
-### Install prerequisites
+For the flat game, the browser build and the reverse-engineering notes, see the
+[upstream README](https://github.com/FatalDecomp/ROLLER#readme).
 
-- [Zig 0.15.2](https://ziglang.org/download/)
+## How it works
 
-The easiest way to install is to use [mise](https://mise.jdx.dev/):
+SDL_GPU does not expose its Vulkan handles, which OpenXR's
+`XR_KHR_vulkan_enable` needs. The patched SDL adds
+`SDL_GetGPUDeviceProperties()`, `SDL_GetGPUTextureProperties()` and an
+`SDL_GPUVulkanOptions` hook, so OpenXR binds to the device SDL_GPU already owns
+and the game keeps its renderer.
 
-```bash
-mise install
-```
+- `vr_runtime.c` runs the OpenXR session. Each frame it renders two windowless
+  `scene_render_gpu` passes, one per eye, and copies them into the projection
+  swapchains.
+- `vr_camera_compose.c` builds the game's camera from the head pose inside
+  `calculateview()`; only the per-eye asymmetric projection is kept from the VR
+  matrices.
+- `vr_quad.c` composes the menu and HUD quad layers the same way, one swapchain
+  each.
+- `vr_input*.c` maps OpenXR actions to a virtual SDL gamepad.
 
-### Build and run the project
+The VR sources are `PROJECTS/ROLLER/vr_*.c`; the rest of the tree is ROLLER.
 
-Using default settings
+## Relationship to upstream
 
-```bash
-zig build run
-```
+This repository is a separate repository, not a GitHub fork. The `roller-vr`
+branch sits on top of ROLLER's `master` as of 2026-08-14 (`0c6b8b4`) and is the
+default branch here. Upstream changes after that point are not merged in yet.
+The VR work is meant to be offered to upstream eventually; until its history is
+cleaned up for that, it lives here.
 
-A custom data folder
+Please report problems with the VR mode in this repository's
+[issues](https://github.com/BoulderM/ROLLER-vr/issues) and attach
+`roller-vr.log`; upstream's tracker does not cover this fork. The log is written
+next to the executable (or in `%APPDATA%\ROLLER\roller-vr` if that folder is not
+writable) and lists the OpenXR runtime, the controller profile the runtime
+picked and the audio settings.
 
-```bash
-zig build -Dassets-path=/path/to/fatdata run
-```
+## Credits
 
-### Prepare the playable demo assets
+- **ROLLER**, the reimplementation this is built on, was created by
+  [Zizin13](https://github.com/Zizin13) and is developed by the
+  [FatalDecomp](https://github.com/FatalDecomp) community, among them
+  [deevus](https://github.com/deevus), [schlangz](https://github.com/schlangz),
+  [ricaun](https://github.com/ricaun),
+  [aspirations04](https://github.com/aspirations04) and the other
+  [contributors](https://github.com/FatalDecomp/ROLLER/graphs/contributors).
+  Everything that makes the game run is their work; this fork only adds the VR
+  layer. Upstream project: <https://github.com/FatalDecomp/ROLLER>, with the
+  game at <https://fatal.racing/> and a browser version at
+  <https://play.fatal.racing/>.
+- **Whiplash / Fatal Racing** was developed and published by Gremlin Interactive
+  in 1995 (published as Whiplash by Interplay Productions in North America in
+  1996). Game design by Les Spink and Ade Carless. All game assets remain the
+  property of their owners; this project ships none of them.
+- **SDL** by the [SDL project](https://github.com/libsdl-org/SDL), built with
+  the Zig build system through
+  [castholm's port](https://github.com/castholm/SDL) and
+  [Zizin13's fork of it](https://github.com/Zizin13/SDL) that ROLLER pins. The
+  VR patches are applied on top of that fork.
+- **OpenXR** by the [Khronos Group](https://www.khronos.org/openxr/); the VR
+  code is written against the spec and the Khronos `hello_xr` sample. **Monado**
+  by [Collabora and contributors](https://monado.freedesktop.org/) made
+  headset-free testing possible.
 
-The browser build uses the hash-pinned Whiplash demo selected by ADR 0002.
-`zig build web` automatically downloads, verifies, and extracts only its
-`FATDATA` tree before packaging it at `/demo/fatdata`:
+### Dependencies
 
-```bash
-zig build web
-```
+- SDL 3.2.22: <https://github.com/libsdl-org/SDL>
+- SDL_image 3.2.4: <https://github.com/libsdl-org/SDL_image>
+- WildMIDI 0.4.6: <https://github.com/Mindwerks/wildmidi>
+- libcdio 2.3.0: <https://github.com/libcdio/libcdio>
+- Nuklear 4.13.2: <https://github.com/Immediate-Mode-UI/Nuklear>
+- OpenXR SDK loader and Vulkan, for `-Dvr` builds only
 
-For an offline build, prepare the tree from a previously downloaded copy, then
-point the web build at it. The explicit tree is verified against the same E3.S2
-file count, size, and tree SHA-256 before `emcc` runs:
+## License
 
-```bash
-python scripts/fetch_demo_assets.py --source /path/to/whipdemo.zip
-zig build web -Ddemo-assets-path=zig-out/fatdata-demo
-```
+GPLv3, inherited from ROLLER; see [LICENSE.md](LICENSE.md). The VR code is
+released under the same licence.
 
-The bundle contains `roller-<sha256>.data` plus a deterministic
-`bundle-manifest.json` with raw byte sizes and SHA-256 hashes.
-
-## Testing
-
-### Rendering snapshot tests
-
-```bash
-git lfs install        # one-time, the baselines are LFS-tracked
-zig build test-snapshots
-```
-
-Captures the indexed framebuffer of every intro replay at hand-picked ticks and
-runs `git diff` against the checked-in baselines. Any pixel change shows up as a
-tracked-file diff that GitHub renders as a side-by-side image diff in PRs.
-
-On a non-canonical host (anything other than the pinned reference machine) use
-`-Dscratch` to capture into `zig-out/snapshot-scratch/` without touching the
-LFS-tracked baselines.
-
-See [`tests/snapshots/README.md`](tests/snapshots/README.md) for the full
-developer workflow (blessing intentional pixel changes, troubleshooting, etc.)
-and
-[`docs/adr/0001-rendering-snapshot-tests.md`](docs/adr/0001-rendering-snapshot-tests.md)
-for the policy decisions.
-
-[ci-shd]: https://img.shields.io/github/actions/workflow/status/FatalDecomp/ROLLER/ci.yml?branch=master&style=for-the-badge&logo=github&label=CI&labelColor=black
-[ci-url]: https://github.com/FatalDecomp/ROLLER/blob/master/.github/workflows/ci.yml
-[dl-shd]: https://img.shields.io/github/v/release/FatalDecomp/ROLLER?include_prereleases&style=for-the-badge&logo=github&label=Download&labelColor=black&color=blue
-[dl-url]: https://github.com/FatalDecomp/ROLLER/releases/latest
-[lc-shd]: https://img.shields.io/github/license/FatalDecomp/ROLLER.svg?style=for-the-badge&labelColor=black
-[lc-url]: https://github.com/FatalDecomp/ROLLER/blob/master/LICENSE.md
-[web-shd]: https://img.shields.io/badge/Play-In%20Browser-e60026?style=for-the-badge&logo=webassembly&logoColor=white&labelColor=black
-[web-url]: https://play.fatal.racing/
+[lc-shd]: https://img.shields.io/github/license/BoulderM/ROLLER-vr.svg?style=for-the-badge&labelColor=black
+[lc-url]: https://github.com/BoulderM/ROLLER-vr/blob/roller-vr/LICENSE.md
+[rel-shd]: https://img.shields.io/github/v/release/BoulderM/ROLLER-vr?include_prereleases&style=for-the-badge&logo=github&label=Download&labelColor=black&color=blue
+[rel-url]: https://github.com/BoulderM/ROLLER-vr/releases
