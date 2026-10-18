@@ -32,6 +32,7 @@ typedef struct {
     int drive_frames, drive_bad;    /* steady drive frames, and those with wrong values */
     int stray_trigger;              /* right_trigger set outside the drive step */
     int shot_frames, stray_shot;    /* both thumbstick clicks inside / outside the drive step's three windows */
+    int comfort_frames;             /* the left click alone, 6.8 s to 7.2 s into the drive (while paused) */
     int pause_frames;               /* Start alone, inside the drive step's two pause/resume taps */
     int stray_hold;                 /* view or menu set outside the exit steps */
     uint64_t hold_run_ms, hold_best_ms, hold_start_ms, hold_best_start_ms;
@@ -138,7 +139,12 @@ static void run_sim(bool stuck_on_main, Trace *tr)
                 tr->drive_bad++;
         }
         /* The screenshot gesture: both clicks for 300 ms at 3 s, 7.5 s (while paused) and 12 s into the drive. */
-        if (in.left_stick_click || in.right_stick_click) {
+        /* The comfort vignette cycle: the left click alone, held 400 ms (while paused). */
+        bool comfort_press = strcmp(cur, "drive") == 0 && in.left_stick_click && !in.right_stick_click
+                          && now - tr->drive_ms >= 6800 && now - tr->drive_ms < 7200;
+        if (comfort_press) {
+            tr->comfort_frames++;
+        } else if (in.left_stick_click || in.right_stick_click) {
             uint64_t rel = now - tr->drive_ms;
             bool in_window = strcmp(cur, "drive") == 0
                           && ((rel >= 3000 && rel < 3300) || (rel >= 7500 && rel < 7800)
@@ -213,6 +219,7 @@ static void test_full_sequence(void)
     CHECK(tr.drive_bad == 0);
     CHECK(tr.stray_trigger == 0);
     CHECK(tr.shot_frames == 90); /* three 300 ms presses at 10 ms frames */
+    CHECK(tr.comfort_frames == 40); /* one 400 ms left click */
     CHECK(tr.pause_frames == 12); /* two 60 ms Start taps */
     CHECK(tr.stray_shot == 0);
     CHECK(tr.drive_ms - tr.countdown_ms == 12000);

@@ -20,6 +20,8 @@
 #define FAKE_SHOT_1_MS        3000u /* into the drive step */
 #define FAKE_SHOT_2_MS       12000u
 #define FAKE_PAUSE_MS         6000u /* Start tap: opens the pause menu */
+#define FAKE_COMFORT_MS       6800u /* the left click alone (comfort vignette cycle), while paused, */
+#define FAKE_COMFORT_PRESS_MS  400u /* held past VR_COMFORT_GRACE_MS */
 #define FAKE_SHOT_PAUSED_MS   7500u /* the screenshot gesture again, while paused */
 #define FAKE_RESUME_MS        9000u /* Start tap: closes it */
 #define FAKE_EXIT_HOLD_MS     2600u /* > VR_SAFETY_HOLD_MS + the 250 ms grace */
@@ -106,6 +108,8 @@ static int run_step(const VrFakeInput *f, VrFakeScreen screen, uint64_t now, VrI
             || (t >= FAKE_SHOT_PAUSED_MS && t < FAKE_SHOT_PAUSED_MS + FAKE_SHOT_PRESS_MS)
             || (t >= FAKE_SHOT_2_MS && t < FAKE_SHOT_2_MS + FAKE_SHOT_PRESS_MS))
             out->left_stick_click = out->right_stick_click = true;
+        if (t >= FAKE_COMFORT_MS && t < FAKE_COMFORT_MS + FAKE_COMFORT_PRESS_MS)
+            out->left_stick_click = true;
         if ((t >= FAKE_PAUSE_MS && t < FAKE_PAUSE_MS + FAKE_PRESS_MS)
             || (t >= FAKE_RESUME_MS && t < FAKE_RESUME_MS + FAKE_PRESS_MS))
             out->menu = true;

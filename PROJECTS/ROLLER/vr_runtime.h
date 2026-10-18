@@ -122,4 +122,9 @@ VkCommandBuffer vr_runtime_copy_command_buffer(void);
  * PNGs in a "screenshots" folder next to the executable. Safe to call any time. */
 void vr_request_screenshot(void);
 
+/* Cycles the comfort vignette (off -> mild -> strong -> off) and saves it to roller-vr.ini.
+ * Only acts in the pause menu, where the new level is previewed. Called from vr_input.c on
+ * VR_INPUT_EVENT_COMFORT. */
+void vr_comfort_cycle(void);
+
 #endif /* VR_RUNTIME_H */

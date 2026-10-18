@@ -291,6 +291,10 @@ void vr_input_frame(bool session_focused)
         vr_log_line("INFO", "VR input: screenshot gesture (both thumbstick clicks), frontend state %d",
                     (int)eFrontendCurrentState);
         vr_request_screenshot();
+    } else if (ev == VR_INPUT_EVENT_COMFORT) {
+        vr_log_line("INFO", "VR input: comfort gesture (left thumbstick click), frontend state %d",
+                    (int)eFrontendCurrentState);
+        vr_comfort_cycle();
     } else if (ev == VR_INPUT_EVENT_RECENTER) {
         vr_log_line("INFO", "VR input: Back+Start tap: recenter requested (frontend state %d; "
                             "nothing to recenter until the menu quad exists)", (int)eFrontendCurrentState);

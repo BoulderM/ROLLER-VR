@@ -334,6 +334,7 @@ pub fn build(b: *std.Build) void {
                 "PROJECTS/ROLLER/vr_fake_input.c",
                 "PROJECTS/ROLLER/vr_quad.c",
                 "PROJECTS/ROLLER/vr_quad_math.c",
+                "PROJECTS/ROLLER/vr_vignette.c",
             },
         });
 
@@ -1658,6 +1659,7 @@ fn configureRenderQueue3DTests(
     vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_ini_merge_test", "tests/vr_ini_merge_test.c", "PROJECTS/ROLLER/vr_ini_merge.c"));
     vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_fake_input_test", "tests/vr_fake_input_test.c", "PROJECTS/ROLLER/vr_fake_input.c"));
     vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_menu_quad_yaw_test", "tests/vr_menu_quad_yaw_test.c", "PROJECTS/ROLLER/vr_quad_math.c"));
+    vr_pure_tests.dependOn(addPureCTest(b, target, optimize, c_flags, "vr_vignette_test", "tests/vr_vignette_test.c", "PROJECTS/ROLLER/vr_vignette.c"));
 
     const test_step = b.step("test", "Run focused unit tests and optional seam checks");
     test_step.dependOn(render_queue_tests);

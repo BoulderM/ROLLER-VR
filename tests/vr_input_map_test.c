@@ -952,6 +952,71 @@ static void test_screenshot_combo(void)
     CHECK(shots <= 1);
 }
 
+/* --- Comfort gesture (left thumbstick click alone) ------------------------------ */
+
+static void test_comfort_gesture(void)
+{
+    VrInputMapState s;
+    VrPadState out;
+    VrInputActions none, left, right, both;
+    memset(&none, 0, sizeof none);
+    memset(&left, 0, sizeof left);
+    memset(&right, 0, sizeof right);
+    memset(&both, 0, sizeof both);
+    left.left_stick_click = true;
+    right.right_stick_click = true;
+    both.left_stick_click = both.right_stick_click = true;
+
+    for (int has_back = 0; has_back <= 1; ++has_back) {
+        vr_input_map_init(&s);
+
+        /* A lone left click waits out VR_COMFORT_GRACE_MS (a partner click may be coming), then
+         * fires once; the click itself still reaches the pad. Holding does not repeat it. */
+        CHECK(step(&s, left, true, has_back, 100, &out) == VR_INPUT_EVENT_NONE);
+        CHECK(step(&s, left, true, has_back, 90, &out) == VR_INPUT_EVENT_NONE);
+        CHECK(step(&s, left, true, has_back, 20, &out) == VR_INPUT_EVENT_COMFORT);
+        expect_only_button(&out, VR_PAD_BUTTON_LEFT_STICK);
+        for (int i = 0; i < 5; ++i)
+            CHECK(step(&s, left, true, has_back, 1000, &out) == VR_INPUT_EVENT_NONE);
+
+        /* Releasing re-arms it. */
+        CHECK(step(&s, none, true, has_back, 10, &out) == VR_INPUT_EVENT_NONE);
+        int fired = 0;
+        for (int i = 0; i < 4; ++i)
+            fired += step(&s, left, true, has_back, 100, &out) == VR_INPUT_EVENT_COMFORT;
+        CHECK(fired == 1);
+
+        /* The second click inside the grace time makes it the screenshot gesture instead, and
+         * the comfort event never follows, not even once the right click is let go again. */
+        vr_input_map_init(&s);
+        CHECK(step(&s, left, true, has_back, 100, &out) == VR_INPUT_EVENT_NONE);
+        CHECK(step(&s, both, true, has_back, 10, &out) == VR_INPUT_EVENT_SCREENSHOT);
+        int comfort = 0;
+        for (int i = 0; i < 6; ++i)
+            comfort += step(&s, both, true, has_back, 100, &out) == VR_INPUT_EVENT_COMFORT;
+        for (int i = 0; i < 6; ++i)
+            comfort += step(&s, left, true, has_back, 100, &out) == VR_INPUT_EVENT_COMFORT;
+        CHECK(comfort == 0);
+        /* Only after both are up is a lone left click a comfort gesture again. */
+        CHECK(step(&s, none, true, has_back, 10, &out) == VR_INPUT_EVENT_NONE);
+        fired = 0;
+        for (int i = 0; i < 4; ++i)
+            fired += step(&s, left, true, has_back, 100, &out) == VR_INPUT_EVENT_COMFORT;
+        CHECK(fired == 1);
+
+        /* The right click alone is nothing. */
+        vr_input_map_init(&s);
+        for (int i = 0; i < 20; ++i)
+            CHECK(step(&s, right, true, has_back, 100, &out) == VR_INPUT_EVENT_NONE);
+    }
+
+    /* Not focused: nothing fires and nothing builds up towards it. */
+    vr_input_map_init(&s);
+    for (int i = 0; i < 10; ++i)
+        CHECK(step(&s, left, false, true, 100, &out) == VR_INPUT_EVENT_NONE);
+    CHECK(step(&s, left, true, true, 100, &out) == VR_INPUT_EVENT_NONE);
+}
+
 int main(void)
 {
     test_rest();
@@ -977,6 +1042,7 @@ int main(void)
     test_actions_set();
     test_pad_index_literals();
     test_screenshot_combo();
+    test_comfort_gesture();
 
     if (g_failures) {
         printf("%d check(s) FAILED\n", g_failures);

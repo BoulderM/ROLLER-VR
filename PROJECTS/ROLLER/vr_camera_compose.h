@@ -115,6 +115,14 @@ void vr_camera_compose_set_active_eye(float qx, float qy, float qz, float qw,
                                        float meters_to_world);
 void vr_camera_compose_clear_active_eye(void);
 
+/* The cockpit rotation (local-to-world, [row][col], vk1..vk9 before this module composed the
+ * head pose in) of the most recent eye vr_camera_compose_apply() handled. Unlike
+ * vr_camera_compose_base_view() it stays readable between eye renders, so the comfort vignette
+ * can measure how fast the car's own view turns from one frame to the next. false until the
+ * first eye has been composed. */
+bool vr_camera_compose_last_cockpit_rot(float out[3][3]);
+
+
 /* Called from calculateview()'s single post-step (view.c), after
  * calculatetransform() has already written vk1..vk9/viewx/viewy/viewz for
  * this call. rot/pos on entry hold the just-computed, not-yet-composed

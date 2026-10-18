@@ -31,6 +31,8 @@ gamepad or the keyboard.
   Gamepads, wheels and keyboards that are plugged in before you start work too.
 - **VR screenshots.** Clicking both thumbsticks saves both eye images plus the
   HUD or menu picture.
+- **Comfort vignette.** Optional (off by default): the edges of your view darken
+  while the car's view turns hard, in a mild or strong setting.
 - **The flat game is still there.** The VR code is compiled only with `-Dvr`, so
   a plain `zig build` produces the normal desktop game.
 
@@ -73,18 +75,34 @@ hear nothing, pause and switch them on in the SOUND item.
 
 With the Steam Frame controllers; gamepads and wheels use the same layout.
 
-| Input                         | Action                                               |
-| ----------------------------- | ---------------------------------------------------- |
-| Left stick                    | Steer                                                |
-| Right trigger                 | Accelerate (hold it fully; see below)                |
-| Left trigger                  | Brake                                                |
-| Left / right shoulder or grip | Shift down / up (the gearbox is automatic otherwise) |
-| Menu (Start)                  | Pause menu; D-pad and A navigate, Menu resumes       |
-| View + Menu, held 2 s         | Quit from anywhere (Menu alone without View)         |
-| Both thumbstick clicks        | Save a screenshot to `screenshots/`                  |
+| Input                          | Action                                               |
+| ------------------------------ | ---------------------------------------------------- |
+| Left stick                     | Steer                                                |
+| Right trigger                  | Accelerate (hold it fully; see below)                |
+| Left trigger                   | Brake                                                |
+| Left / right shoulder or grip  | Shift down / up (the gearbox is automatic otherwise) |
+| Menu (Start)                   | Pause menu; D-pad and A navigate, Menu resumes       |
+| View + Menu, held 2 s          | Quit from anywhere (Menu alone without View)         |
+| Both thumbstick clicks         | Save a screenshot to `screenshots/`                  |
+| Left thumbstick click (paused) | Cycle the comfort vignette: off, mild, strong        |
 
 After GO the engine needs about a second before the car moves, so keep the right
 trigger fully down. A short or light pull may not get the car moving.
+
+## Comfort vignette
+
+Fast racing in VR can make some people feel unwell: the world swings around
+while your body sits still. The vignette softly darkens the edges of your view
+only while the car's own view is turning hard (corners, ramps, loops) and fades
+back out afterwards, which takes away much of the peripheral motion that causes
+it. Turning your own head never triggers it.
+
+It is off by default. Pause the game and click the left thumbstick to cycle off,
+mild and strong; while the pause menu is open the ring is shown at its darkest
+so you can see what the setting does. The choice is saved in `roller-vr.ini`
+next to the executable (`vignette=off`, `mild` or `strong`; you can also edit
+that file), and setting the environment variable `ROLLER_VR_VIGNETTE` forces a
+level for one run.
 
 ## Command line
 

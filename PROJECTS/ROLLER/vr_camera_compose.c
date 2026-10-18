@@ -143,6 +143,10 @@ static float s_meters_to_world;
 static bool  s_have_base = false;
 static float s_base_pos[3];
 static int   s_base_yaw;
+/* The cockpit rotation (before the head pose) of the latest composed eye, kept across
+ * frames; see vr_camera_compose_last_cockpit_rot(). */
+static bool  s_have_last_cockpit = false;
+static float s_last_cockpit_rot[3][3];
 
 void vr_camera_compose_set_active_eye(float qx, float qy, float qz, float qw,
                                        float px, float py, float pz,
@@ -168,6 +172,15 @@ bool vr_camera_compose_base_view(float out_pos[3], int *out_yaw)
     return true;
 }
 
+bool vr_camera_compose_last_cockpit_rot(float out[3][3])
+{
+    if (!s_have_last_cockpit) return false;
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            out[i][j] = s_last_cockpit_rot[i][j];
+    return true;
+}
+
 bool vr_camera_compose_apply(float rot[3][3], float pos[3],
                               int *out_yaw, int *out_pitch, int *out_roll)
 {
@@ -177,6 +190,10 @@ bool vr_camera_compose_apply(float rot[3][3], float pos[3],
         s_base_pos[0] = pos[0]; s_base_pos[1] = pos[1]; s_base_pos[2] = pos[2];
         vr_camera_angles_from_rotation((const float (*)[3])rot, &s_base_yaw, &base_pitch, &base_roll);
         s_have_base = true;
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                s_last_cockpit_rot[i][j] = rot[i][j];
+        s_have_last_cockpit = true;
     }
     vr_camera_compose(rot, pos, s_qx, s_qy, s_qz, s_qw, s_px, s_py, s_pz,
                        s_meters_to_world, rot, pos);
