@@ -36,9 +36,9 @@ the normal desktop game.
 
 ## Status
 
-Early release. It was developed and played on Windows 11 with SteamVR 2.17-2.18
+Version 1.0. It was developed and played on Windows 11 with SteamVR 2.17-2.18
 and a Steam Frame with its controllers; graphics, head tracking, menus, driving,
-sound, the pause menu and screenshots work there. The Touch and
+sound, the pause menu, the VR options and screenshots work there. The Touch and
 simple-controller bindings are included, and other headsets and OpenXR runtimes
 should work in principle. On Linux the same code runs against
 [Monado](https://monado.freedesktop.org/), the open-source OpenXR runtime, which
